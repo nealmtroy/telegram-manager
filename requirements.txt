@@ -1,0 +1,18 @@
+# Telegram Manager - Python dependencies
+# -----------------------------------------------------------------------------
+# Tested on Python 3.9+
+
+# Telegram MTProto client (multi-session, native 2FA support)
+Telethon>=1.36.0,<2.0.0
+
+# Pretty terminal output (tables, colors, panels)
+rich>=13.7.0
+
+# Interactive prompts (menus, confirmations, password input)
+questionary>=2.0.1
+
+# Load API_ID/API_HASH from .env
+python-dotenv>=1.0.0
+
+# Cryptography backend for Telethon (faster than pure-python)
+cryptg>=0.4.0

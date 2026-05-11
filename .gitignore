@@ -1,0 +1,94 @@
+# =============================================================================
+# Telegram Manager - .gitignore
+# =============================================================================
+# IMPORTANT: Session files and credentials MUST NEVER be committed.
+# A leaked .session file = full account access for an attacker.
+# =============================================================================
+
+# ---- Secrets & sessions (CRITICAL) ------------------------------------------
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+sessions/
+accounts.json
+credentials.json
+config.ini
+!config.example.ini
+
+# ---- Logs -------------------------------------------------------------------
+logs/
+*.log
+debug.log
+error.log
+
+# ---- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---- Virtual environments ---------------------------------------------------
+venv/
+env/
+ENV/
+.venv/
+.env/
+virtualenv/
+
+# ---- Testing / coverage -----------------------------------------------------
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# ---- IDE / editors ----------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+
+# ---- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Misc -------------------------------------------------------------------
+*.bak
+*.tmp
+*.temp
+.mypy_cache/
+.ruff_cache/
+.pyre/
