@@ -39,3 +39,15 @@ create table if not exists broadcast_lists (
     created_at timestamptz default now(),
     unique(admin_id, name)
 );
+
+
+-- Saved broadcast messages
+create table if not exists saved_messages (
+    id bigserial primary key,
+    admin_id bigint not null references admins(user_id) on delete cascade,
+    name text not null,
+    text text not null,
+    has_media boolean default false,
+    created_at timestamptz default now(),
+    unique(admin_id, name)
+);

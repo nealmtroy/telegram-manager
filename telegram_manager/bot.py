@@ -32,15 +32,18 @@ from .db import (
     BroadcastListRow,
     add_account,
     add_list,
+    delete_saved_msg,
     find_account,
     get_accounts,
     get_list,
     get_lists,
+    get_saved_messages,
     is_managed_account,
     is_registered_admin,
     register_admin,
     remove_account,
     remove_list,
+    save_broadcast_msg,
     transfer_all,
 )
 from .device_presets import get_preset
@@ -221,7 +224,8 @@ async def btn_health(message: Message) -> None:
 
 @router.message(F.text == "Broadcast")
 async def btn_broadcast(message: Message) -> None:
-    lists = get_lists(message.from_user.id)
+    uid = message.from_user.id
+    lists = get_lists(uid)
     if not lists:
         await message.answer("No lists. Create one first via 'Manage Lists'.", reply_markup=_main_kb())
         return
@@ -231,7 +235,7 @@ async def btn_broadcast(message: Message) -> None:
         "Pick a list:",
         reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
     )
-    _state[message.from_user.id] = {"action": "broadcast_pick"}
+    _state[uid] = {"action": "broadcast_pick"}
 
 
 @router.message(F.text == "Manage Lists")
@@ -524,19 +528,87 @@ async def handle_text(message: Message) -> None:
     elif action == "broadcast_pick":
         if text.startswith("bc:"):
             list_name = text[3:]
-            _state[uid] = {"action": "broadcast_msg", "list": list_name}
-            await message.answer(f"List: {list_name}\n\nType the message to broadcast:", reply_markup=_back_kb())
+            saved = get_saved_messages(uid)
+            _state[uid] = {"action": "broadcast_msg_choice", "list": list_name}
+            buttons = []
+            if saved:
+                for s in saved:
+                    buttons.append([KeyboardButton(text=f"saved:{s['name']}")])
+            buttons.append([KeyboardButton(text="New message")])
+            buttons.append([KeyboardButton(text="<< Menu")])
+            await message.answer(
+                f"List: {list_name}\n\nPick saved message or send new:",
+                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+            )
         else:
             await message.answer("Pick a list from the buttons.")
+
+    elif action == "broadcast_msg_choice":
+        if text == "New message":
+            _state[uid]["action"] = "broadcast_msg"
+            await message.answer("Send the message (text/media):", reply_markup=_back_kb())
+        elif text.startswith("saved:"):
+            # Use saved message text
+            name = text[6:]
+            saved = get_saved_messages(uid)
+            found = next((s for s in saved if s["name"] == name), None)
+            if not found:
+                await message.answer("Not found.", reply_markup=_back_kb())
+                return
+            _state[uid]["saved_text"] = found["text"]
+            _state[uid]["action"] = "broadcast_delay_type"
+            buttons = [
+                [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
+                [KeyboardButton(text="<< Menu")],
+            ]
+            await message.answer(
+                f"Using saved: {name}\n\nDelay mode:",
+                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+            )
+        else:
+            await message.answer("Pick from buttons.")
 
     elif action == "broadcast_msg":
         # Save the full message (text + entities + media)
         _state[uid]["message"] = message
+        _state[uid]["action"] = "broadcast_save_ask"
+        buttons = [
+            [KeyboardButton(text="Save & continue"), KeyboardButton(text="Just continue")],
+            [KeyboardButton(text="<< Menu")],
+        ]
+        await message.answer("Save this message for reuse?", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
+
+    elif action == "broadcast_save_ask":
+        if text == "Save & continue":
+            _state[uid]["action"] = "broadcast_save_name"
+            await message.answer("Enter a name for this saved message:", reply_markup=_back_kb())
+        else:
+            _state[uid]["action"] = "broadcast_delay_type"
+            buttons = [
+                [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
+                [KeyboardButton(text="<< Menu")],
+            ]
+            await message.answer(
+                "Delay mode:\n• Per group\n• Per round",
+                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+            )
+
+    elif action == "broadcast_save_name":
+        src = _state[uid]["message"]
+        raw_text = src.text or src.caption or ""
+        entities = src.entities or src.caption_entities or []
+        html_text = _entities_to_html(raw_text, entities)
+        has_media = bool(src.photo or src.video or src.document or src.animation)
+        save_broadcast_msg(uid, text, html_text, has_media)
         _state[uid]["action"] = "broadcast_delay_type"
         buttons = [
             [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
             [KeyboardButton(text="<< Menu")],
         ]
+        await message.answer(
+            f"Saved as '{text}'.\n\nDelay mode:\n• Per group\n• Per round",
+            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+        )
         await message.answer(
             "Delay mode:\n"
             "• Per group — delay between each group\n"
@@ -583,35 +655,38 @@ async def handle_text(message: Message) -> None:
             return
 
         # Build message content preserving formatting + media
-        src_msg = st["message"]
         watermark = os.getenv("WATERMARK", "")
-
-        # Get text with entities (bold, italic, etc.) -> convert to HTML
-        raw_text = src_msg.text or src_msg.caption or ""
-        entities = src_msg.entities or src_msg.caption_entities or []
-        msg_text = _entities_to_html(raw_text, entities)
-        has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
-
-        # Append watermark
-        if watermark:
-            msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
-
-        # Download media if present (for Telethon sending)
         media_bytes = None
         media_filename = None
-        if has_media:
-            if src_msg.photo:
-                media_bytes = await src_msg.bot.download(src_msg.photo[-1], destination=None)
-                media_filename = "photo.jpg"
-            elif src_msg.video:
-                media_bytes = await src_msg.bot.download(src_msg.video, destination=None)
-                media_filename = src_msg.video.file_name or "video.mp4"
-            elif src_msg.animation:
-                media_bytes = await src_msg.bot.download(src_msg.animation, destination=None)
-                media_filename = "animation.gif"
-            elif src_msg.document:
-                media_bytes = await src_msg.bot.download(src_msg.document, destination=None)
-                media_filename = src_msg.document.file_name or "file"
+        has_media = False
+
+        if "saved_text" in st:
+            # Using saved message (text only)
+            msg_text = st["saved_text"]
+        else:
+            # Using fresh message with possible media
+            src_msg = st["message"]
+            raw_text = src_msg.text or src_msg.caption or ""
+            entities = src_msg.entities or src_msg.caption_entities or []
+            msg_text = _entities_to_html(raw_text, entities)
+            has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
+
+            if has_media:
+                if src_msg.photo:
+                    media_bytes = await src_msg.bot.download(src_msg.photo[-1], destination=None)
+                    media_filename = "photo.jpg"
+                elif src_msg.video:
+                    media_bytes = await src_msg.bot.download(src_msg.video, destination=None)
+                    media_filename = src_msg.video.file_name or "video.mp4"
+                elif src_msg.animation:
+                    media_bytes = await src_msg.bot.download(src_msg.animation, destination=None)
+                    media_filename = "animation.gif"
+                elif src_msg.document:
+                    media_bytes = await src_msg.bot.download(src_msg.document, destination=None)
+                    media_filename = src_msg.document.file_name or "file"
+
+        if watermark:
+            msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
 
         delay_type = st["delay_type"]
         await message.answer(
@@ -633,6 +708,7 @@ async def handle_text(message: Message) -> None:
         from telethon.tl.functions.channels import JoinChannelRequest
         from telethon.tl.functions.messages import ImportChatInviteRequest
         from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
+        from datetime import datetime, timezone
 
         bot = message.bot
         log_dest = _log_chat_id() or message.chat.id
@@ -640,6 +716,9 @@ async def handle_text(message: Message) -> None:
 
         while _state.get(uid, {}).get("action") == "broadcasting":
             round_num += 1
+            round_success = []
+            round_failed = []
+
             for acc in accounts:
                 if _state.get(uid, {}).get("action") != "broadcasting":
                     break
@@ -668,24 +747,36 @@ async def handle_text(message: Message) -> None:
                                 )
                             else:
                                 await client.send_message(e, msg_text, parse_mode="html")
-                        except (ChatWriteForbiddenError, UserBannedInChannelError):
-                            await bot.send_message(log_dest, f"[{acc.alias}] Blocked from {target}")
+                            round_success.append(f"{acc.alias} -> {target}")
+                        except (ChatWriteForbiddenError, UserBannedInChannelError) as ex:
+                            round_failed.append(f"{acc.alias} -> {target}: Blocked/Banned")
                         except SlowModeWaitError as sme:
-                            await bot.send_message(log_dest, f"[{acc.alias}] {target}: slow mode {sme.seconds}s")
+                            round_failed.append(f"{acc.alias} -> {target}: SlowMode {sme.seconds}s")
                         except FloodWaitError as fw:
-                            await bot.send_message(log_dest, f"[{acc.alias}] Flood wait {fw.seconds}s")
+                            round_failed.append(f"{acc.alias} -> {target}: FloodWait {fw.seconds}s")
                             await asyncio.sleep(fw.seconds)
-                        except Exception:
-                            pass
+                        except Exception as ex:
+                            round_failed.append(f"{acc.alias} -> {target}: {type(ex).__name__}")
                         if delay_type == "per_group" and delay_max > 0:
                             await asyncio.sleep(random.uniform(delay_min, delay_max))
                 except Exception as ex:
-                    await bot.send_message(log_dest, f"[{acc.alias}] Error: {type(ex).__name__}")
+                    round_failed.append(f"{acc.alias}: {type(ex).__name__}")
                 finally:
                     if client.is_connected():
                         await client.disconnect()
 
+            # Send round summary log
             if _state.get(uid, {}).get("action") == "broadcasting":
+                now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                log_lines = [f"Round {round_num} | {now}"]
+                log_lines.append(f"Sent: {len(round_success)}")
+                if round_success:
+                    log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
+                if round_failed:
+                    log_lines.append(f"Failed: {len(round_failed)}")
+                    log_lines.append("Errors:\n  " + "\n  ".join(round_failed))
+                await bot.send_message(log_dest, "\n".join(log_lines))
+
                 if delay_type == "per_round" and delay_max > 0:
                     await asyncio.sleep(random.uniform(delay_min, delay_max))
                 else:

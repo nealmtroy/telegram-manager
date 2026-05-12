@@ -184,3 +184,28 @@ def transfer_all(from_admin_id: int, to_admin_id: int) -> int:
     # Transfer lists
     r2 = db.table("broadcast_lists").update({"admin_id": to_admin_id}).eq("admin_id", from_admin_id).execute()
     return acc_count + len(r2.data)
+
+
+
+# ---------------------------------------------------------------------------
+# Saved broadcast messages
+# ---------------------------------------------------------------------------
+def save_broadcast_msg(admin_id: int, name: str, text: str, has_media: bool = False) -> None:
+    db = _get_client()
+    db.table("saved_messages").upsert({
+        "admin_id": admin_id,
+        "name": name,
+        "text": text,
+        "has_media": has_media,
+    }, on_conflict="admin_id,name").execute()
+
+
+def get_saved_messages(admin_id: int) -> list:
+    db = _get_client()
+    r = db.table("saved_messages").select("*").eq("admin_id", admin_id).order("name").execute()
+    return r.data
+
+
+def delete_saved_msg(admin_id: int, name: str) -> None:
+    db = _get_client()
+    db.table("saved_messages").delete().eq("admin_id", admin_id).eq("name", name).execute()
