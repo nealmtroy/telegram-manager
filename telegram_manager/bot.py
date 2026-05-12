@@ -1,7 +1,7 @@
-"""Telegram Bot interface with Supabase storage.
+"""Telegram Bot interface with Supabase storage — fully button-driven.
 
-Fully stateless — no filesystem needed. Sessions stored as StringSession in DB.
-Anyone can /start to become admin, unless their user_id is already managed.
+No slash commands needed. All interaction via inline buttons + text input
+guided by conversation state.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import random
 from typing import Dict
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -49,71 +49,67 @@ from .logger import get_logger
 log = get_logger("bot")
 router = Router()
 
-_login_state: Dict[int, dict] = {}
+# Per-user state for multi-step flows
+_state: Dict[int, dict] = {}
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _build_client_from_session(session_string: str, preset_key: str) -> TelegramClient:
+def _client_from_session(session_string: str, preset_key: str) -> TelegramClient:
     cfg = load_config()
     preset = get_preset(preset_key)
     return TelegramClient(
-        StringSession(session_string),
-        cfg.api_id,
-        cfg.api_hash,
-        device_model=preset.device_model,
-        system_version=preset.system_version,
-        app_version=preset.app_version,
-        lang_code=preset.lang_code,
+        StringSession(session_string), cfg.api_id, cfg.api_hash,
+        device_model=preset.device_model, system_version=preset.system_version,
+        app_version=preset.app_version, lang_code=preset.lang_code,
         system_lang_code=preset.system_lang_code,
     )
 
 
-def _build_new_client(preset_key: str = "random") -> tuple:
-    """Returns (client, preset) with empty StringSession."""
+def _new_client(preset_key: str = "random"):
     cfg = load_config()
     preset = get_preset(preset_key)
     client = TelegramClient(
-        StringSession(),
-        cfg.api_id,
-        cfg.api_hash,
-        device_model=preset.device_model,
-        system_version=preset.system_version,
-        app_version=preset.app_version,
-        lang_code=preset.lang_code,
+        StringSession(), cfg.api_id, cfg.api_hash,
+        device_model=preset.device_model, system_version=preset.system_version,
+        app_version=preset.app_version, lang_code=preset.lang_code,
         system_lang_code=preset.system_lang_code,
     )
     return client, preset
 
 
-async def _check_access(message: Message) -> bool:
-    uid = message.from_user.id
-    if is_managed_account(uid):
-        await message.answer(
-            "Access denied.\n"
-            "Your account is managed by another admin."
-        )
-        return False
-    if not is_registered_admin(uid):
-        await message.answer("Use /start to register first.")
-        return False
-    return True
-
-
 def _main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Add account", callback_data="m:login"),
-         InlineKeyboardButton(text="My accounts", callback_data="m:accounts")],
-        [InlineKeyboardButton(text="Health check", callback_data="m:health"),
-         InlineKeyboardButton(text="Broadcast", callback_data="m:broadcast")],
-        [InlineKeyboardButton(text="Lists", callback_data="m:lists"),
-         InlineKeyboardButton(text="Help", callback_data="m:help")],
+        [InlineKeyboardButton(text="Add Account", callback_data="add"),
+         InlineKeyboardButton(text="My Accounts", callback_data="accounts")],
+        [InlineKeyboardButton(text="Health Check", callback_data="health"),
+         InlineKeyboardButton(text="Broadcast", callback_data="broadcast")],
+        [InlineKeyboardButton(text="Manage Lists", callback_data="lists"),
+         InlineKeyboardButton(text="Join Group", callback_data="join")],
+        [InlineKeyboardButton(text="Edit Profile", callback_data="edit"),
+         InlineKeyboardButton(text="Remove/Logout", callback_data="cleanup")],
     ])
 
 
+def _back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="<< Menu", callback_data="menu")]
+    ])
+
+
+def _accounts_kb(admin_id: int, action: str) -> InlineKeyboardMarkup:
+    """Generate account selection buttons."""
+    accounts = get_accounts(admin_id)
+    buttons = [[InlineKeyboardButton(
+        text=f"{a.alias} ({a.phone})", callback_data=f"{action}:{a.alias}"
+    )] for a in accounts]
+    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 # ---------------------------------------------------------------------------
-# /start
+# /start + menu
 # ---------------------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
@@ -123,51 +119,55 @@ async def cmd_start(message: Message) -> None:
         return
     register_admin(uid, message.from_user.username or "", message.from_user.first_name or "")
     n = len(get_accounts(uid))
-    await message.answer(
-        f"Telegram Manager\nAccounts: {n}\n\nChoose:",
-        reply_markup=_main_kb(),
-    )
+    await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
 
 
-@router.message(Command("menu"))
-async def cmd_menu(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    await message.answer("Menu:", reply_markup=_main_kb())
-
-
-
-# ---------------------------------------------------------------------------
-# Callbacks
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "m:login")
-async def cb_login(cq: CallbackQuery) -> None:
+@router.callback_query(F.data == "menu")
+async def cb_menu(cq: CallbackQuery) -> None:
     await cq.answer()
-    await cq.message.answer("Send: /login <phone>\nExample: /login +628123456789")
+    _state.pop(cq.from_user.id, None)
+    n = len(get_accounts(cq.from_user.id))
+    await cq.message.edit_text(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
 
 
-@router.callback_query(F.data == "m:accounts")
+# ---------------------------------------------------------------------------
+# Add Account flow (button-driven)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "add")
+async def cb_add(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "login_phone"}
+    await cq.message.edit_text("Enter phone number (e.g. +628123456789):", reply_markup=_back_kb())
+
+
+# ---------------------------------------------------------------------------
+# Accounts
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "accounts")
 async def cb_accounts(cq: CallbackQuery) -> None:
     await cq.answer()
     accounts = get_accounts(cq.from_user.id)
     if not accounts:
-        await cq.message.answer("No accounts. /login <phone> to add.")
+        await cq.message.edit_text("No accounts yet.", reply_markup=_back_kb())
         return
     lines = [f"{i}. [{a.alias}] {a.phone} — {a.display_name}" for i, a in enumerate(accounts, 1)]
-    await cq.message.answer("\n".join(lines))
+    await cq.message.edit_text("\n".join(lines), reply_markup=_back_kb())
 
 
-@router.callback_query(F.data == "m:health")
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "health")
 async def cb_health(cq: CallbackQuery) -> None:
     await cq.answer()
     accounts = get_accounts(cq.from_user.id)
     if not accounts:
-        await cq.message.answer("No accounts.")
+        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
         return
-    await cq.message.answer("Checking...")
+    await cq.message.edit_text("Checking...")
     lines = []
     for acc in accounts:
-        client = _build_client_from_session(acc.session_string, acc.device_preset)
+        client = _client_from_session(acc.session_string, acc.device_preset)
         try:
             await client.connect()
             me = await client.get_me()
@@ -177,158 +177,463 @@ async def cb_health(cq: CallbackQuery) -> None:
         finally:
             if client.is_connected():
                 await client.disconnect()
-    await cq.message.answer("\n".join(lines))
+    await cq.message.edit_text("\n".join(lines), reply_markup=_back_kb())
 
 
-@router.callback_query(F.data == "m:broadcast")
+# ---------------------------------------------------------------------------
+# Broadcast
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "broadcast")
 async def cb_broadcast(cq: CallbackQuery) -> None:
     await cq.answer()
     lists = get_lists(cq.from_user.id)
     if not lists:
-        await cq.message.answer("No lists.\n/createlist <name> <target1> <target2> ...\nThen: /broadcast <list> <msg>")
+        await cq.message.edit_text(
+            "No broadcast lists.\nUse 'Manage Lists' to create one first.",
+            reply_markup=_back_kb()
+        )
         return
-    lines = [f"{bl.name} ({len(bl.targets)} targets)" for bl in lists]
-    lines.append("\n/broadcast <list_name> <message>")
-    await cq.message.answer("\n".join(lines))
+    buttons = [[InlineKeyboardButton(
+        text=f"{bl.name} ({len(bl.targets)} targets)", callback_data=f"bc:{bl.name}"
+    )] for bl in lists]
+    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
+    await cq.message.edit_text("Pick a list to broadcast:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
-@router.callback_query(F.data == "m:lists")
+@router.callback_query(F.data.startswith("bc:"))
+async def cb_broadcast_pick(cq: CallbackQuery) -> None:
+    await cq.answer()
+    list_name = cq.data[3:]
+    _state[cq.from_user.id] = {"action": "broadcast_msg", "list": list_name}
+    await cq.message.edit_text(f"List: {list_name}\n\nType the message to broadcast:", reply_markup=_back_kb())
+
+
+# ---------------------------------------------------------------------------
+# Lists management
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "lists")
 async def cb_lists(cq: CallbackQuery) -> None:
     await cq.answer()
     lists = get_lists(cq.from_user.id)
-    if not lists:
-        await cq.message.answer("No lists. /createlist <name> <t1> <t2> ...")
-        return
-    lines = [f"{bl.name} ({len(bl.targets)}): {', '.join(bl.targets[:5])}" for bl in lists]
-    await cq.message.answer("\n".join(lines))
+    buttons = []
+    if lists:
+        for bl in lists:
+            buttons.append([InlineKeyboardButton(
+                text=f"{bl.name} ({len(bl.targets)})", callback_data=f"viewlist:{bl.name}"
+            )])
+    buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
+    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
+    await cq.message.edit_text("Broadcast Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
-@router.callback_query(F.data == "m:help")
-async def cb_help(cq: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("viewlist:"))
+async def cb_viewlist(cq: CallbackQuery) -> None:
     await cq.answer()
-    await cq.message.answer(
-        "/login <phone> - Add account\n"
-        "/code <code> - Login code\n"
-        "/password <pass> - 2FA\n"
-        "/accounts - List accounts\n"
-        "/health - Check sessions\n"
-        "/groups <alias> - Groups/channels\n"
-        "/join <alias> <target> - Join\n"
-        "/send <alias> <target> <text> - Send\n"
-        "/broadcast <list> <text> - Broadcast\n"
-        "/createlist <name> <targets...>\n"
-        "/deletelist <name>\n"
-        "/editname <alias> <first> [last]\n"
-        "/editbio <alias> <bio>\n"
-        "/editusername <alias> <user>\n"
-        "/logout <alias>\n"
-        "/remove <alias>\n"
-        "/menu - Main menu"
-    )
+    name = cq.data[9:]
+    bl = get_list(cq.from_user.id, name)
+    if not bl:
+        await cq.message.edit_text("List not found.", reply_markup=_back_kb())
+        return
+    targets = "\n".join(f"  {i}. {t}" for i, t in enumerate(bl.targets, 1))
+    buttons = [
+        [InlineKeyboardButton(text="Delete this list", callback_data=f"dellist:{name}")],
+        [InlineKeyboardButton(text="<< Lists", callback_data="lists")],
+    ]
+    await cq.message.edit_text(f"List: {name}\n\n{targets}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("dellist:"))
+async def cb_dellist(cq: CallbackQuery) -> None:
+    await cq.answer()
+    name = cq.data[8:]
+    remove_list(cq.from_user.id, name)
+    await cq.message.edit_text(f"List '{name}' deleted.", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data == "createlist")
+async def cb_createlist(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "createlist_name"}
+    await cq.message.edit_text("Enter a name for the new list:", reply_markup=_back_kb())
+
+
+# ---------------------------------------------------------------------------
+# Join group
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "join")
+async def cb_join(cq: CallbackQuery) -> None:
+    await cq.answer()
+    accounts = get_accounts(cq.from_user.id)
+    if not accounts:
+        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        return
+    await cq.message.edit_text("Pick account to join with:", reply_markup=_accounts_kb(cq.from_user.id, "join"))
+
+
+@router.callback_query(F.data.startswith("join:"))
+async def cb_join_pick(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[5:]
+    _state[cq.from_user.id] = {"action": "join_target", "alias": alias}
+    await cq.message.edit_text(f"Account: {alias}\n\nEnter group/channel username or invite link:", reply_markup=_back_kb())
+
+
+# ---------------------------------------------------------------------------
+# Edit profile
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "edit")
+async def cb_edit(cq: CallbackQuery) -> None:
+    await cq.answer()
+    accounts = get_accounts(cq.from_user.id)
+    if not accounts:
+        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        return
+    await cq.message.edit_text("Pick account to edit:", reply_markup=_accounts_kb(cq.from_user.id, "editpick"))
+
+
+@router.callback_query(F.data.startswith("editpick:"))
+async def cb_editpick(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[9:]
+    buttons = [
+        [InlineKeyboardButton(text="Edit Name", callback_data=f"ename:{alias}"),
+         InlineKeyboardButton(text="Edit Bio", callback_data=f"ebio:{alias}")],
+        [InlineKeyboardButton(text="Edit Username", callback_data=f"euser:{alias}")],
+        [InlineKeyboardButton(text="<< Menu", callback_data="menu")],
+    ]
+    await cq.message.edit_text(f"Editing [{alias}]:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("ename:"))
+async def cb_ename(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[6:]
+    _state[cq.from_user.id] = {"action": "edit_name", "alias": alias}
+    await cq.message.edit_text(f"[{alias}] Enter new name (first last):", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data.startswith("ebio:"))
+async def cb_ebio(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[5:]
+    _state[cq.from_user.id] = {"action": "edit_bio", "alias": alias}
+    await cq.message.edit_text(f"[{alias}] Enter new bio:", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data.startswith("euser:"))
+async def cb_euser(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[6:]
+    _state[cq.from_user.id] = {"action": "edit_username", "alias": alias}
+    await cq.message.edit_text(f"[{alias}] Enter new username (without @):", reply_markup=_back_kb())
+
+
+# ---------------------------------------------------------------------------
+# Remove / Logout
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "cleanup")
+async def cb_cleanup(cq: CallbackQuery) -> None:
+    await cq.answer()
+    accounts = get_accounts(cq.from_user.id)
+    if not accounts:
+        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        return
+    buttons = [[InlineKeyboardButton(
+        text=f"{a.alias} ({a.phone})", callback_data=f"cleanpick:{a.alias}"
+    )] for a in accounts]
+    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
+    await cq.message.edit_text("Pick account:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("cleanpick:"))
+async def cb_cleanpick(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[10:]
+    buttons = [
+        [InlineKeyboardButton(text="Logout (revoke)", callback_data=f"logout:{alias}"),
+         InlineKeyboardButton(text="Remove only", callback_data=f"remove:{alias}")],
+        [InlineKeyboardButton(text="<< Menu", callback_data="menu")],
+    ]
+    await cq.message.edit_text(f"[{alias}] What to do?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("logout:"))
+async def cb_logout(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[7:]
+    acc = find_account(cq.from_user.id, alias)
+    if not acc:
+        await cq.message.edit_text("Not found.", reply_markup=_back_kb())
+        return
+    client = _client_from_session(acc.session_string, acc.device_preset)
+    try:
+        await client.connect()
+        await client.log_out()
+    except Exception:
+        pass
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+    remove_account(cq.from_user.id, acc.phone)
+    await cq.message.edit_text(f"[{alias}] Logged out and removed.", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data.startswith("remove:"))
+async def cb_remove(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[7:]
+    acc = remove_account(cq.from_user.id, alias)
+    if acc:
+        await cq.message.edit_text(f"[{alias}] Removed.", reply_markup=_back_kb())
+    else:
+        await cq.message.edit_text("Not found.", reply_markup=_back_kb())
 
 
 
 # ---------------------------------------------------------------------------
-# Login flow
+# Text message handler — processes all state-driven input
 # ---------------------------------------------------------------------------
-@router.message(Command("login"))
-async def cmd_login(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Usage: /login <phone>")
-        return
-    phone = parts[1].strip()
-    admin_id = message.from_user.id
-    cfg = load_config()
-    if not cfg.has_own_api:
-        await message.answer("TELEGRAM_API_ID/TELEGRAM_API_HASH not set.")
+@router.message(F.text)
+async def handle_text(message: Message) -> None:
+    uid = message.from_user.id
+    if not is_registered_admin(uid):
         return
 
-    client, preset = _build_new_client("random")
-    await client.connect()
-    try:
-        sent = await client.send_code_request(phone)
-    except FloodWaitError as e:
-        await client.disconnect()
-        await message.answer(f"Flood wait: {e.seconds}s")
-        return
-    except Exception as e:
-        await client.disconnect()
-        await message.answer(f"Error: {type(e).__name__}: {e}")
+    state = _state.get(uid)
+    if not state:
+        # No active state, show menu
+        n = len(get_accounts(uid))
+        await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
         return
 
-    _login_state[admin_id] = {
-        "phone": phone,
-        "phone_code_hash": sent.phone_code_hash,
-        "client": client,
-        "preset": preset,
-        "step": "code",
-    }
-    await message.answer(f"Code sent to {phone}.\nDevice: {preset.device_model}\n\n/code <5-digit>")
+    action = state["action"]
+    text = message.text.strip()
 
+    # --- Login flow ---
+    if action == "login_phone":
+        cfg = load_config()
+        if not cfg.has_own_api:
+            await message.answer("API credentials not configured.", reply_markup=_back_kb())
+            _state.pop(uid, None)
+            return
+        client, preset = _new_client("random")
+        await client.connect()
+        try:
+            sent = await client.send_code_request(text)
+        except FloodWaitError as e:
+            await client.disconnect()
+            await message.answer(f"Flood wait: {e.seconds}s. Try later.", reply_markup=_back_kb())
+            _state.pop(uid, None)
+            return
+        except Exception as e:
+            await client.disconnect()
+            await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
+            _state.pop(uid, None)
+            return
+        _state[uid] = {
+            "action": "login_code",
+            "phone": text,
+            "phone_code_hash": sent.phone_code_hash,
+            "client": client,
+            "preset": preset,
+        }
+        await message.answer(f"Code sent to {text}\nDevice: {preset.device_model}\n\nEnter the 5-digit code:")
 
-@router.message(Command("code"))
-async def cmd_code(message: Message) -> None:
-    admin_id = message.from_user.id
-    if admin_id not in _login_state:
-        await message.answer("No pending login. /login <phone>")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/code <code>")
-        return
-    state = _login_state[admin_id]
-    client = state["client"]
-    try:
-        await client.sign_in(state["phone"], parts[1].strip(), phone_code_hash=state["phone_code_hash"])
-    except PhoneCodeInvalidError:
-        await message.answer("Invalid code. /code <code>")
-        return
-    except PhoneCodeExpiredError:
-        del _login_state[admin_id]
-        await client.disconnect()
-        await message.answer("Code expired. /login again.")
-        return
-    except SessionPasswordNeededError:
-        state["step"] = "2fa"
-        await message.answer("2FA required. /password <pass>")
-        return
-    await _finish_login(message, admin_id)
+    elif action == "login_code":
+        client = state["client"]
+        try:
+            await client.sign_in(state["phone"], text, phone_code_hash=state["phone_code_hash"])
+        except PhoneCodeInvalidError:
+            await message.answer("Invalid code. Try again:")
+            return
+        except PhoneCodeExpiredError:
+            await client.disconnect()
+            _state.pop(uid, None)
+            await message.answer("Code expired. Start over.", reply_markup=_back_kb())
+            return
+        except SessionPasswordNeededError:
+            _state[uid]["action"] = "login_2fa"
+            await message.answer("2FA enabled. Enter your cloud password:")
+            return
+        await _finish_login(message, uid)
 
+    elif action == "login_2fa":
+        client = state["client"]
+        try:
+            await client.sign_in(password=text)
+        except Exception as e:
+            await message.answer(f"Wrong password: {e}\nTry again:")
+            return
+        state["is_2fa"] = True
+        await _finish_login(message, uid)
 
-@router.message(Command("password"))
-async def cmd_password(message: Message) -> None:
-    admin_id = message.from_user.id
-    if admin_id not in _login_state or _login_state[admin_id].get("step") != "2fa":
-        await message.answer("No pending 2FA.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/password <pass>")
-        return
-    state = _login_state[admin_id]
-    try:
-        await state["client"].sign_in(password=parts[1])
-    except Exception as e:
-        await message.answer(f"Failed: {e}")
-        return
-    await _finish_login(message, admin_id)
+    # --- Broadcast message ---
+    elif action == "broadcast_msg":
+        list_name = state["list"]
+        _state.pop(uid, None)
+        bl = get_list(uid, list_name)
+        if not bl:
+            await message.answer("List not found.", reply_markup=_back_kb())
+            return
+        accounts = get_accounts(uid)
+        if not accounts:
+            await message.answer("No accounts.", reply_markup=_back_kb())
+            return
+        await message.answer(f"Broadcasting to {len(bl.targets)} targets from {len(accounts)} accounts...")
+
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        results = []
+        for acc in accounts:
+            client = _client_from_session(acc.session_string, acc.device_preset)
+            try:
+                await client.connect()
+                await client.get_me()
+                res = []
+                for target in bl.targets:
+                    try:
+                        if "t.me/+" in target or "joinchat/" in target:
+                            await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
+                        else:
+                            await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
+                    except Exception:
+                        pass
+                    try:
+                        e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
+                        await client.send_message(e, text)
+                        res.append("ok")
+                    except Exception as ex:
+                        res.append(type(ex).__name__)
+                    await asyncio.sleep(random.uniform(3, 8))
+                results.append(f"[{acc.alias}] {'/'.join(res)}")
+            except Exception as ex:
+                results.append(f"[{acc.alias}] FAIL: {type(ex).__name__}")
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+        await message.answer("\n".join(results), reply_markup=_back_kb())
+
+    # --- Create list ---
+    elif action == "createlist_name":
+        _state[uid] = {"action": "createlist_targets", "name": text, "targets": []}
+        await message.answer(f"List: {text}\n\nEnter targets one by one.\nSend 'done' when finished:")
+
+    elif action == "createlist_targets":
+        if text.lower() == "done":
+            targets = state["targets"]
+            if not targets:
+                await message.answer("No targets added. Cancelled.", reply_markup=_back_kb())
+            else:
+                add_list(BroadcastListRow(admin_id=uid, name=state["name"], targets=targets))
+                await message.answer(f"List '{state['name']}' created ({len(targets)} targets).", reply_markup=_back_kb())
+            _state.pop(uid, None)
+        else:
+            state["targets"].append(text)
+            await message.answer(f"Added: {text} ({len(state['targets'])} total)\n\nNext target or 'done':")
+
+    # --- Join ---
+    elif action == "join_target":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Account not found.", reply_markup=_back_kb())
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset)
+        try:
+            await client.connect()
+            await client.get_me()
+            from telethon.tl.functions.channels import JoinChannelRequest
+            from telethon.tl.functions.messages import ImportChatInviteRequest
+            if "t.me/+" in text or "joinchat/" in text:
+                await client(ImportChatInviteRequest(text.split("+")[-1].split("joinchat/")[-1]))
+            else:
+                await client(JoinChannelRequest(text.lstrip("@").replace("https://t.me/", "")))
+            await message.answer(f"[{alias}] Joined {text}", reply_markup=_back_kb())
+        except Exception as e:
+            await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+
+    # --- Edit name ---
+    elif action == "edit_name":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Not found.", reply_markup=_back_kb())
+            return
+        parts = text.split(maxsplit=1)
+        first = parts[0]
+        last = parts[1] if len(parts) > 1 else ""
+        client = _client_from_session(acc.session_string, acc.device_preset)
+        try:
+            await client.connect()
+            await client.get_me()
+            from telethon.tl.functions.account import UpdateProfileRequest
+            await client(UpdateProfileRequest(first_name=first, last_name=last))
+            await message.answer(f"[{alias}] Name: {first} {last}".strip(), reply_markup=_back_kb())
+        except Exception as e:
+            await message.answer(f"Error: {e}", reply_markup=_back_kb())
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+
+    # --- Edit bio ---
+    elif action == "edit_bio":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Not found.", reply_markup=_back_kb())
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset)
+        try:
+            await client.connect()
+            await client.get_me()
+            from telethon.tl.functions.account import UpdateProfileRequest
+            await client(UpdateProfileRequest(about=text))
+            await message.answer(f"[{alias}] Bio updated.", reply_markup=_back_kb())
+        except Exception as e:
+            await message.answer(f"Error: {e}", reply_markup=_back_kb())
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+
+    # --- Edit username ---
+    elif action == "edit_username":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Not found.", reply_markup=_back_kb())
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset)
+        try:
+            await client.connect()
+            await client.get_me()
+            from telethon.tl.functions.account import UpdateUsernameRequest
+            await client(UpdateUsernameRequest(username=text.lstrip("@")))
+            await message.answer(f"[{alias}] Username: @{text.lstrip('@')}", reply_markup=_back_kb())
+        except Exception as e:
+            await message.answer(f"Error: {e}", reply_markup=_back_kb())
+        finally:
+            if client.is_connected():
+                await client.disconnect()
 
 
 async def _finish_login(message: Message, admin_id: int) -> None:
-    state = _login_state.pop(admin_id)
+    state = _state.pop(admin_id)
     client = state["client"]
     me = await client.get_me()
 
-    # Anti-double
     if is_registered_admin(me.id):
         await client.disconnect()
-        await message.answer(f"Cannot add — user {me.id} is already an admin.")
+        await message.answer("Cannot add — this user is already an admin.", reply_markup=_back_kb())
         return
 
-    # Save StringSession
     session_str = client.session.save()
     await client.disconnect()
 
@@ -341,7 +646,7 @@ async def _finish_login(message: Message, admin_id: int) -> None:
         last_name=me.last_name or "",
         username=me.username,
         user_id=me.id,
-        is_2fa=(state.get("step") == "2fa"),
+        is_2fa=state.get("is_2fa", False),
         device_preset=state["preset"].key,
     )
     add_account(acc)
@@ -350,343 +655,6 @@ async def _finish_login(message: Message, admin_id: int) -> None:
         f"Alias: {acc.alias}\nDevice: {state['preset'].device_model}",
         reply_markup=_main_kb(),
     )
-
-
-
-# ---------------------------------------------------------------------------
-# Account commands
-# ---------------------------------------------------------------------------
-@router.message(Command("accounts"))
-async def cmd_accounts(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts. /login <phone>")
-        return
-    lines = [f"{i}. [{a.alias}] {a.phone} — {a.display_name}" for i, a in enumerate(accounts, 1)]
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("health"))
-async def cmd_health(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.")
-        return
-    lines = []
-    for acc in accounts:
-        client = _build_client_from_session(acc.session_string, acc.device_preset)
-        try:
-            await client.connect()
-            await client.get_me()
-            lines.append(f"[{acc.alias}] OK")
-        except Exception as e:
-            lines.append(f"[{acc.alias}] FAIL — {type(e).__name__}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("groups"))
-async def cmd_groups(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/groups <alias>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        dialogs = await client.get_dialogs()
-        lines = []
-        for d in dialogs:
-            e = d.entity
-            if hasattr(e, "megagroup"):
-                t = "Group" if e.megagroup else "Channel"
-                u = f"@{e.username}" if getattr(e, "username", None) else "-"
-                lines.append(f"{getattr(e, 'title', '?')} | {u} | {t}")
-        await message.answer("\n".join(lines[:50]) if lines else "None found.")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-@router.message(Command("join"))
-async def cmd_join(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("/join <alias> <target>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    target = parts[2].strip()
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
-        if "t.me/+" in target or "joinchat/" in target:
-            await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
-        else:
-            await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
-        await message.answer(f"[{acc.alias}] Joined {target}")
-    except Exception as e:
-        await message.answer(f"Error: {type(e).__name__}: {e}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-@router.message(Command("send"))
-async def cmd_send(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=3)
-    if len(parts) < 4:
-        await message.answer("/send <alias> <target> <text>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        msg = await client.send_message(parts[2].strip(), parts[3])
-        await message.answer(f"[{acc.alias}] Sent (id={msg.id})")
-    except Exception as e:
-        await message.answer(f"Error: {type(e).__name__}: {e}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-
-# ---------------------------------------------------------------------------
-# Broadcast, lists, edit, cleanup
-# ---------------------------------------------------------------------------
-@router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("/broadcast <list_name> <text>")
-        return
-    bl = get_list(message.from_user.id, parts[1].strip())
-    if not bl:
-        await message.answer("List not found. /lists")
-        return
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.")
-        return
-    text = parts[2]
-    await message.answer(f"Broadcasting to {len(bl.targets)} targets from {len(accounts)} accounts...")
-
-    from telethon.tl.functions.channels import JoinChannelRequest
-    from telethon.tl.functions.messages import ImportChatInviteRequest
-
-    results = []
-    for acc in accounts:
-        client = _build_client_from_session(acc.session_string, acc.device_preset)
-        try:
-            await client.connect()
-            await client.get_me()
-            res = []
-            for target in bl.targets:
-                try:
-                    if "t.me/+" in target or "joinchat/" in target:
-                        await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
-                    else:
-                        await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
-                except Exception:
-                    pass
-                try:
-                    e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
-                    await client.send_message(e, text)
-                    res.append("ok")
-                except Exception as ex:
-                    res.append(type(ex).__name__)
-                await asyncio.sleep(random.uniform(3, 8))
-            results.append(f"[{acc.alias}] {'/'.join(res)}")
-        except Exception as ex:
-            results.append(f"[{acc.alias}] FAIL: {type(ex).__name__}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-    await message.answer("\n".join(results))
-
-
-@router.message(Command("lists"))
-async def cmd_lists(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    lists = get_lists(message.from_user.id)
-    if not lists:
-        await message.answer("No lists. /createlist <name> <t1> <t2>")
-        return
-    lines = [f"{bl.name} ({len(bl.targets)}): {', '.join(bl.targets[:5])}" for bl in lists]
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("createlist"))
-async def cmd_createlist(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split()
-    if len(parts) < 3:
-        await message.answer("/createlist <name> <target1> <target2> ...")
-        return
-    add_list(BroadcastListRow(admin_id=message.from_user.id, name=parts[1], targets=parts[2:]))
-    await message.answer(f"List '{parts[1]}' created ({len(parts)-2} targets).")
-
-
-@router.message(Command("deletelist"))
-async def cmd_deletelist(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/deletelist <name>")
-        return
-    remove_list(message.from_user.id, parts[1].strip())
-    await message.answer("Deleted.")
-
-
-@router.message(Command("editname"))
-async def cmd_editname(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=3)
-    if len(parts) < 3:
-        await message.answer("/editname <alias> <first> [last]")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    first, last = parts[2], parts[3] if len(parts) > 3 else ""
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        from telethon.tl.functions.account import UpdateProfileRequest
-        await client(UpdateProfileRequest(first_name=first, last_name=last))
-        await message.answer(f"[{acc.alias}] Name: {first} {last}".strip())
-    except Exception as e:
-        await message.answer(f"Error: {e}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-@router.message(Command("editbio"))
-async def cmd_editbio(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("/editbio <alias> <bio>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        from telethon.tl.functions.account import UpdateProfileRequest
-        await client(UpdateProfileRequest(about=parts[2]))
-        await message.answer(f"[{acc.alias}] Bio updated.")
-    except Exception as e:
-        await message.answer(f"Error: {e}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-@router.message(Command("editusername"))
-async def cmd_editusername(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("/editusername <alias> <username>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.get_me()
-        from telethon.tl.functions.account import UpdateUsernameRequest
-        await client(UpdateUsernameRequest(username=parts[2].strip().lstrip("@")))
-        await message.answer(f"[{acc.alias}] Username updated.")
-    except Exception as e:
-        await message.answer(f"Error: {e}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-
-
-@router.message(Command("logout"))
-async def cmd_logout(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/logout <alias>")
-        return
-    acc = find_account(message.from_user.id, parts[1].strip())
-    if not acc:
-        await message.answer("Not found.")
-        return
-    client = _build_client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.log_out()
-    except Exception:
-        pass
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-    remove_account(message.from_user.id, acc.phone)
-    await message.answer(f"[{acc.alias}] Logged out.")
-
-
-@router.message(Command("remove"))
-async def cmd_remove(message: Message) -> None:
-    if not await _check_access(message):
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("/remove <alias>")
-        return
-    acc = remove_account(message.from_user.id, parts[1].strip())
-    if acc:
-        await message.answer(f"[{acc.alias}] Removed.")
-    else:
-        await message.answer("Not found.")
 
 
 # ---------------------------------------------------------------------------
