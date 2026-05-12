@@ -29,6 +29,7 @@ from telethon.errors import (
     ApiIdInvalidError,
     AuthKeyUnregisteredError,
     FloodWaitError,
+    ForbiddenError,
     PasswordHashInvalidError,
     PhoneCodeEmptyError,
     PhoneCodeExpiredError,
@@ -51,6 +52,7 @@ from .exceptions import (
     InvalidPasswordError,
     InvalidPhoneError,
     PhoneBannedError,
+    RecaptchaRequiredError,
     UserCancelledError,
 )
 from .logger import get_logger
@@ -80,7 +82,6 @@ class AuthFlow:
         alias: str,
         code_callback: CodeCallback,
         password_callback: PasswordCallback,
-        force_sms: bool = False,
         device_preset: str = "default",
     ) -> Account:
         """Perform an interactive login.
@@ -92,14 +93,14 @@ class AuthFlow:
             alias: Human-friendly short name.
             code_callback: Async callable returning the login code typed by user.
             password_callback: Async callable returning the 2FA password.
-            force_sms: If True, request SMS delivery instead of the in-app code.
             device_preset: Key into :mod:`device_presets`. Picks device_model,
                 system_version, app_version - and for non-default presets, the
                 leaked official api_id/api_hash. See README for ToS warning.
 
         Raises:
             InvalidPhoneError, InvalidCodeError, InvalidPasswordError,
-            PhoneBannedError, FloodError, ConnectionError, AuthError
+            PhoneBannedError, RecaptchaRequiredError, FloodError,
+            ConnectionError, AuthError
         """
         phone_norm = self._normalize_phone(phone)
         alias = alias.strip()
@@ -141,7 +142,7 @@ class AuthFlow:
 
             # --- 1. Send the login code ----------------------------------
             try:
-                sent = await client.send_code_request(phone_norm, force_sms=force_sms)
+                sent = await client.send_code_request(phone_norm)
                 log.debug(
                     "Code request sent to %s (type=%s)",
                     phone_norm,
@@ -164,9 +165,36 @@ class AuthFlow:
                 raise FloodError(seconds=exc.seconds) from exc
             except ApiIdInvalidError as exc:
                 raise ConfigError(
-                    "TELEGRAM_API_ID/TELEGRAM_API_HASH are invalid. "
-                    "Re-check them at https://my.telegram.org/apps."
+                    "TELEGRAM_API_ID/TELEGRAM_API_HASH are invalid or have been "
+                    "rotated by Telegram. If you picked an official device preset, "
+                    "that leaked pair may no longer work - try a different preset "
+                    "or switch to 'default' with your own api_id."
                 ) from exc
+            except ForbiddenError as exc:
+                msg = str(exc)
+                if "RECAPTCHA" in msg.upper():
+                    is_signup = "SIGNUP" in msg.upper()
+                    raise RecaptchaRequiredError(
+                        (
+                            "Telegram is demanding a reCAPTCHA challenge"
+                            + (" for signup" if is_signup else "")
+                            + " and MTProto clients can't solve it.\n\n"
+                            "Most likely cause: this phone number doesn't have a "
+                            "Telegram account yet, so Telegram is gating signup "
+                            "to block bots.\n\n"
+                            "What to try:\n"
+                            "  1. Register the number once via the official "
+                            "Telegram app (download, sign up, done), then retry "
+                            "'Add account' here. reCAPTCHA only applies to "
+                            "signup, not login.\n"
+                            "  2. Switch to the 'default' device preset (your "
+                            "own api_id from .env).\n"
+                            "  3. Try a different device preset "
+                            "(samsung_s24 / desktop_windows sometimes pass "
+                            "when iOS doesn't)."
+                        )
+                    ) from exc
+                raise AuthError(f"Telegram refused the login: {msg}") from exc
 
             # --- 2. Ask for the code ------------------------------------
             code = (await code_callback()).strip()

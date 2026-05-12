@@ -21,6 +21,7 @@ from rich.table import Table
 from .device_presets import DEFAULT_PRESET_KEY, DevicePreset, get_preset, list_presets
 from .exceptions import (
     AccountNotFoundError,
+    RecaptchaRequiredError,
     TelegramManagerError,
     UserCancelledError,
 )
@@ -60,6 +61,15 @@ class InteractiveCLI:
                 console.print(f"[yellow]Cancelled:[/yellow] {exc}")
             except AccountNotFoundError as exc:
                 console.print(f"[red]Not found:[/red] {exc}")
+            except RecaptchaRequiredError as exc:
+                console.print(
+                    Panel.fit(
+                        str(exc),
+                        title="⚠  reCAPTCHA wall hit",
+                        border_style="red",
+                    )
+                )
+                log.debug("Handled reCAPTCHA error", exc_info=True)
             except TelegramManagerError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
                 log.debug("Handled error", exc_info=True)
@@ -104,10 +114,6 @@ class InteractiveCLI:
         )
         if preset is None:
             return
-        force_sms = await questionary.confirm(
-            "Request code via SMS instead of Telegram app?", default=False
-        ).ask_async()
-        force_sms = bool(force_sms)
 
         console.print(
             Panel.fit(
@@ -137,7 +143,6 @@ class InteractiveCLI:
             alias=alias,
             code_callback=ask_code,
             password_callback=ask_password,
-            force_sms=force_sms,
             device_preset=preset.key,
         )
         badge = "[yellow]2FA[/yellow]" if account.is_2fa else "[green]no-2FA[/green]"

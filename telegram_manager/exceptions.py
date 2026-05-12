@@ -51,6 +51,27 @@ class PhoneBannedError(AuthError):
     """Phone number is banned or restricted by Telegram."""
 
 
+class RecaptchaRequiredError(AuthError):
+    """Telegram demands a reCAPTCHA challenge before it will send a login code.
+
+    This almost always shows up as ``RECAPTCHA_CHECK_signup__<sitekey>`` from
+    ``auth.SendCodeRequest`` and typically means:
+
+    * The phone number does NOT have a Telegram account yet — Telegram is
+      gating signup behind reCAPTCHA to block bot-registered numbers, and
+    * Third-party MTProto clients (Telethon, etc.) cannot solve reCAPTCHA;
+      only the official Telegram app has the webview flow for it.
+
+    The practical workarounds (documented in the README) are:
+
+    1. Register the number once via the official Telegram app, then log in
+       with this tool. Signup-time reCAPTCHA doesn't apply to login.
+    2. Switch the account to the ``default`` device preset (your own api_id).
+    3. Try a different device preset (Android or Desktop sometimes passes
+       when iOS doesn't).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Network / rate limiting
 # ---------------------------------------------------------------------------
