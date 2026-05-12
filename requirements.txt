@@ -16,3 +16,6 @@ python-dotenv>=1.0.0
 
 # Cryptography backend for Telethon (faster than pure-python)
 cryptg>=0.4.0
+
+# Telegram Bot API framework (for remote bot management)
+aiogram>=3.4.0,<4.0.0

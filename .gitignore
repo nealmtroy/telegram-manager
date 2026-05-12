@@ -14,6 +14,7 @@
 sessions/
 accounts.json
 broadcast_lists.json
+admins/
 credentials.json
 config.ini
 !config.example.ini
