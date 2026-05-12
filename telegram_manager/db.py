@@ -72,9 +72,9 @@ def is_registered_admin(user_id: int) -> bool:
 
 
 def is_managed_account(user_id: int) -> bool:
-    """Check if user_id is already a managed account under any admin."""
+    """Check if user_id is a managed account under a DIFFERENT admin."""
     db = _get_client()
-    r = db.table("accounts").select("user_id").eq("user_id", user_id).execute()
+    r = db.table("accounts").select("admin_id").eq("user_id", user_id).neq("admin_id", user_id).execute()
     return len(r.data) > 0
 
 
