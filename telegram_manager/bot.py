@@ -693,7 +693,10 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                 log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
             if round_failed:
                 log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
-            await bot.send_message(log_dest, "\n".join(log_lines))
+            try:
+                await bot.send_message(log_dest, "\n".join(log_lines))
+            except Exception:
+                pass
 
             if delay_type == "per_round" and delay_max > 0:
                 await asyncio.sleep(random.uniform(delay_min, delay_max))
@@ -1252,7 +1255,10 @@ async def handle_text(message: Message) -> None:
                 if round_failed:
                     log_lines.append(f"Failed: {len(round_failed)}")
                     log_lines.append("Errors:\n  " + "\n  ".join(round_failed))
-                await bot.send_message(log_dest, "\n".join(log_lines))
+                try:
+                    await bot.send_message(log_dest, "\n".join(log_lines))
+                except Exception:
+                    pass
 
                 if delay_type == "per_round" and delay_max > 0:
                     await asyncio.sleep(random.uniform(delay_min, delay_max))
