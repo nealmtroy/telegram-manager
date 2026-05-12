@@ -154,7 +154,7 @@ def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
             [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
             [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
-            [KeyboardButton(text=labels[8]), KeyboardButton(text=labels[9])],
+            [KeyboardButton(text=labels[8])],
         ],
         resize_keyboard=True,
     )
@@ -165,71 +165,71 @@ _MENU_LABELS = {
         "➕ Tambah Akun", "👤 Akun Saya",
         "💚 Health Check", "📣 Broadcast",
         "📋 Kelola List", "📥 Join Group",
-        "✏️ Edit Profil", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "🗑 Hapus/Logout", "🔄 Transfer",
+        "🌐 Bahasa",
     ],
     "en": [
         "➕ Add Account", "👤 My Accounts",
         "💚 Health Check", "📣 Broadcast",
         "📋 Manage Lists", "📥 Join Group",
-        "✏️ Edit Profile", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Language",
+        "🗑 Remove/Logout", "🔄 Transfer",
+        "🌐 Language",
     ],
     "ms": [
         "➕ Tambah Akaun", "👤 Akaun Saya",
         "💚 Health Check", "📣 Broadcast",
         "📋 Kelola List", "📥 Join Group",
-        "✏️ Edit Profil", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "🗑 Hapus/Logout", "🔄 Transfer",
+        "🌐 Bahasa",
     ],
     "th": [
         "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
         "💚 Health Check", "📣 Broadcast",
         "📋 จัดการ List", "📥 เข้าร่วมกลุ่ม",
-        "✏️ แก้ไขโปรไฟล์", "🗑 ลบ/Logout",
-        "🔄 โอนข้อมูล", "🌐 ภาษา",
+        "🗑 ลบ/Logout", "🔄 โอนข้อมูล",
+        "🌐 ภาษา",
     ],
     "vi": [
         "➕ Thêm TK", "👤 Tài khoản",
         "💚 Health Check", "📣 Broadcast",
         "📋 Quản lý List", "📥 Tham gia",
-        "✏️ Sửa hồ sơ", "🗑 Xóa/Logout",
-        "🔄 Chuyển", "🌐 Ngôn ngữ",
+        "🗑 Xóa/Logout", "🔄 Chuyển",
+        "🌐 Ngôn ngữ",
     ],
     "zh": [
         "➕ 添加账号", "👤 我的账号",
         "💚 健康检查", "📣 广播",
         "📋 管理列表", "📥 加入群组",
-        "✏️ 编辑资料", "🗑 删除/登出",
-        "🔄 转移", "🌐 语言",
+        "🗑 删除/登出", "🔄 转移",
+        "🌐 语言",
     ],
     "ja": [
         "➕ アカウント追加", "👤 マイアカウント",
         "💚 ヘルスチェック", "📣 ブロードキャスト",
         "📋 リスト管理", "📥 グループ参加",
-        "✏️ プロフィール編集", "🗑 削除/ログアウト",
-        "🔄 転送", "🌐 言語",
+        "🗑 削除/ログアウト", "🔄 転送",
+        "🌐 言語",
     ],
     "ko": [
         "➕ 계정 추가", "👤 내 계정",
         "💚 상태 확인", "📣 브로드캐스트",
         "📋 목록 관리", "📥 그룹 참여",
-        "✏️ 프로필 편집", "🗑 삭제/로그아웃",
-        "🔄 전송", "🌐 언어",
+        "🗑 삭제/로그아웃", "🔄 전송",
+        "🌐 언어",
     ],
     "hi": [
         "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
         "💚 Health Check", "📣 Broadcast",
         "📋 List प्रबंधन", "📥 Group जॉइन",
-        "✏️ प्रोफ़ाइल एडिट", "🗑 हटाएं/Logout",
-        "🔄 ट्रांसफर", "🌐 भाषा",
+        "🗑 हटाएं/Logout", "🔄 ट्रांसफर",
+        "🌐 भाषा",
     ],
     "fil": [
         "➕ Dagdag Account", "👤 Mga Account",
         "💚 Health Check", "📣 Broadcast",
         "📋 Manage Lists", "📥 Join Group",
-        "✏️ Edit Profile", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Wika",
+        "🗑 Remove/Logout", "🔄 Transfer",
+        "🌐 Wika",
     ],
 }
 
@@ -240,7 +240,7 @@ def _get_menu_action(text: str) -> str | None:
         if text in labels:
             idx = labels.index(text)
             return ["add", "accounts", "health", "broadcast",
-                    "lists", "join", "edit", "cleanup", "transfer", "lang"][idx]
+                    "lists", "join", "cleanup", "transfer", "lang"][idx]
     return None
 
 
@@ -509,9 +509,44 @@ async def cb_acc(cq: CallbackQuery) -> None:
     info += f"\n📟 Device: {acc.device_preset}"
     buttons = [
         [InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit:{acc.alias}"),
-         InlineKeyboardButton(text="🗑 Remove", callback_data=f"clean:{acc.alias}")],
+         InlineKeyboardButton(text="📨 OTP", callback_data=f"otp:{acc.alias}")],
+        [InlineKeyboardButton(text="🗑 Remove", callback_data=f"clean:{acc.alias}")],
     ]
     await cq.message.edit_text(info, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("otp:"))
+async def cb_otp(cq: CallbackQuery) -> None:
+    """Fetch latest OTP/verification codes from Telegram service messages."""
+    await cq.answer()
+    uid = cq.from_user.id
+    acc = find_account(uid, cq.data[4:])
+    if not acc:
+        await cq.message.edit_text("Not found.")
+        return
+    client = _client_from_session(acc.session_string, acc.device_preset)
+    try:
+        await client.connect()
+        from telethon.tl.types import InputPeerUser
+        from datetime import datetime, timezone
+        import re as _re
+        codes = []
+        async for msg in client.iter_messages(777000, limit=5):
+            # 777000 is Telegram's official service notifications
+            nums = _re.findall(r"\b\d{4,6}\b", msg.text or "")
+            if nums:
+                ts = msg.date.astimezone(timezone.utc).strftime("%H:%M:%S")
+                codes.append(f"🕐 {ts} — 🔑 {nums[0]}")
+        if not codes:
+            await cq.message.edit_text(f"[{acc.alias}] Tidak ada OTP terbaru.")
+        else:
+            await cq.message.edit_text(
+                f"📨 OTP [{acc.alias}]:\n\n" + "\n".join(codes))
+    except Exception as e:
+        await cq.message.edit_text(f"[{acc.alias}] Error: {type(e).__name__}")
+    finally:
+        if client.is_connected():
+            await client.disconnect()
 
 
 # ---------------------------------------------------------------------------
@@ -713,17 +748,6 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"join:{a.alias}")] for a in accounts]
-        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    elif action == "edit":
-        if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
-            return
-        buttons = []
-        for a in accounts:
-            label = a.display_name
-            if a.username:
-                label += f" (@{a.username})"
-            buttons.append([InlineKeyboardButton(text=label, callback_data=f"edit:{a.alias}")])
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
