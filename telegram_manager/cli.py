@@ -226,12 +226,15 @@ class InteractiveCLI:
             f"What to do on {len(accounts)} accounts?",
             choices=[
                 Choice(title="Get profile (get_me) for each", value="me"),
+                Choice(title="Join groups/channels", value="join"),
                 Choice(title="Broadcast a message", value="send"),
                 Choice(title="Back", value="back"),
             ],
         ).ask_async()
         if action == "me":
             await self._show_me(accounts)
+        elif action == "join":
+            await self._join_chats(accounts)
         elif action == "send":
             await self._send_message(accounts=accounts)
 
@@ -562,6 +565,46 @@ class InteractiveCLI:
             return
         results = await self.manager.send_message(target, text, accounts=accounts)
         _render_broadcast_table(results, value_header="Msg ID")
+
+    async def _join_chats(self, accounts: List[Account]) -> None:
+        """Join multiple groups/channels interactively."""
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        targets: List[str] = []
+        console.print("[dim]Enter group/channel usernames or invite links one by one.[/dim]")
+        while True:
+            t = await _ask_text(
+                f"Group/channel ({len(targets)} added, empty to finish):", default=""
+            )
+            if not t:
+                if not targets:
+                    console.print("[dim]No targets added, cancelled.[/dim]")
+                    return
+                break
+            targets.append(t.strip())
+            console.print(f"  [cyan]+[/cyan] {t.strip()}")
+
+        console.print(f"\n[bold]Joining {len(targets)} chat(s) from {len(accounts)} account(s)...[/bold]")
+
+        async def _join(client, acc):
+            results = []
+            for target in targets:
+                try:
+                    if "t.me/+" in target or "joinchat/" in target:
+                        # Invite link
+                        invite_hash = target.split("+")[-1].split("joinchat/")[-1]
+                        await client(ImportChatInviteRequest(invite_hash))
+                    else:
+                        username = target.lstrip("@").replace("https://t.me/", "")
+                        await client(JoinChannelRequest(username))
+                    results.append(f"{target}: ok")
+                except Exception as e:
+                    results.append(f"{target}: {type(e).__name__}")
+            return " | ".join(results)
+
+        broadcast_results = await self.manager.run_on_all(_join, accounts=accounts)
+        _render_broadcast_table(broadcast_results, value_header="Results")
 
     async def _pick_account(self, prompt: str) -> Optional[Account]:
         accounts = self.manager.list_accounts()
