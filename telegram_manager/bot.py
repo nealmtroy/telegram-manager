@@ -636,7 +636,7 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
 
     bot = message.bot
-    log_dest = _log_chat_id() or message.chat.id
+    log_dest = _log_chat_id()
     round_num = 0
 
     while _state.get(uid, {}).get("action") == "broadcasting":
@@ -693,10 +693,17 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                 log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
             if round_failed:
                 log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
-            try:
-                await bot.send_message(log_dest, "\n".join(log_lines))
-            except Exception:
-                pass
+            # Send log via admin's Telethon account (not bot)
+            if log_dest:
+                log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
+                try:
+                    await log_client.connect()
+                    await log_client.send_message(log_dest, "\n".join(log_lines))
+                except Exception:
+                    pass
+                finally:
+                    if log_client.is_connected():
+                        await log_client.disconnect()
 
             if delay_type == "per_round" and delay_max > 0:
                 await asyncio.sleep(random.uniform(delay_min, delay_max))
@@ -1191,7 +1198,7 @@ async def handle_text(message: Message) -> None:
         from datetime import datetime, timezone
 
         bot = message.bot
-        log_dest = _log_chat_id() or message.chat.id
+        log_dest = _log_chat_id()
         round_num = 0
 
         while _state.get(uid, {}).get("action") == "broadcasting":
@@ -1255,10 +1262,16 @@ async def handle_text(message: Message) -> None:
                 if round_failed:
                     log_lines.append(f"Failed: {len(round_failed)}")
                     log_lines.append("Errors:\n  " + "\n  ".join(round_failed))
-                try:
-                    await bot.send_message(log_dest, "\n".join(log_lines))
-                except Exception:
-                    pass
+                if log_dest:
+                    log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
+                    try:
+                        await log_client.connect()
+                        await log_client.send_message(log_dest, "\n".join(log_lines))
+                    except Exception:
+                        pass
+                    finally:
+                        if log_client.is_connected():
+                            await log_client.disconnect()
 
                 if delay_type == "per_round" and delay_max > 0:
                     await asyncio.sleep(random.uniform(delay_min, delay_max))
