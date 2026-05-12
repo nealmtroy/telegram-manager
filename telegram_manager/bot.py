@@ -287,6 +287,17 @@ async def cmd_start(message: Message) -> None:
 async def btn_menu(message: Message) -> None:
     uid = message.from_user.id
     _state.pop(uid, None)
+    # Delete user's message and previous bot message
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    prev = _last_bot_msg.pop(uid, None)
+    if prev:
+        try:
+            await message.bot.delete_message(message.chat.id, prev)
+        except Exception:
+            pass
     accounts = get_accounts(uid)
     if not accounts:
         _state[uid] = {"action": "login_phone"}
@@ -786,6 +797,11 @@ async def handle_text(message: Message) -> None:
     if not state:
         menu_action = _get_menu_action(text)
         if menu_action:
+            # Delete user's button press message
+            try:
+                await message.delete()
+            except Exception:
+                pass
             await _dispatch_menu(message, uid, menu_action)
             return
         n = len(get_accounts(uid))
