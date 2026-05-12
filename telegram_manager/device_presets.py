@@ -74,9 +74,9 @@ DEVICE_PRESETS: Dict[str, DevicePreset] = {
     "default": DevicePreset(
         key="default",
         display_name="Your own api_id (from .env)  [SAFE]",
-        device_model="Telegram-Manager",
-        system_version="1.0",
-        app_version="0.1.0",
+        device_model="iPhone 15 Pro Max",
+        system_version="iOS 18.5",
+        app_version="11.12.1",
     ),
 
     # ---- iOS (Telegram iOS official) --------------------------------------
