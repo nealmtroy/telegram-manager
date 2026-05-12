@@ -194,6 +194,7 @@ class InteractiveCLI:
             f"What to do on [{acc.alias}]?",
             choices=[
                 Choice(title="Get profile (get_me)", value="me"),
+                Choice(title="List groups & channels", value="list_chats"),
                 Choice(title="Edit name", value="edit_name"),
                 Choice(title="Edit bio", value="edit_bio"),
                 Choice(title="Edit username", value="edit_username"),
@@ -203,6 +204,8 @@ class InteractiveCLI:
         ).ask_async()
         if action == "me":
             await self._show_me([acc])
+        elif action == "list_chats":
+            await self._list_chats(acc)
         elif action == "edit_name":
             await self._edit_name(acc)
         elif action == "edit_bio":
@@ -312,6 +315,53 @@ class InteractiveCLI:
         console.print(f"[green]Logged out[/green] {acc.alias}.")
 
     # ---- shared sub-flows ----------------------------------------------
+    async def _list_chats(self, acc: Account) -> None:
+        async def _action(client, _acc):
+            from telethon.tl.types import Channel, Chat, Megagroup
+            dialogs = await client.get_dialogs()
+            chats = []
+            for d in dialogs:
+                entity = d.entity
+                if hasattr(entity, "megagroup"):
+                    if entity.megagroup:
+                        chat_type = "Group"
+                    elif entity.broadcast:
+                        chat_type = "Channel"
+                    else:
+                        chat_type = "Group"
+                elif hasattr(entity, "participants_count"):
+                    chat_type = "Group"
+                else:
+                    continue
+                chats.append({
+                    "name": getattr(entity, "title", "?"),
+                    "username": getattr(entity, "username", None),
+                    "type": chat_type,
+                    "members": getattr(entity, "participants_count", None),
+                })
+            return chats
+
+        chats = await self.manager.run_on(acc.phone, _action)
+        if not chats:
+            console.print("[dim]No groups or channels found.[/dim]")
+            return
+        table = Table(title=f"Groups & Channels ({len(chats)})", show_lines=False)
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Name")
+        table.add_column("Username")
+        table.add_column("Type", justify="center")
+        table.add_column("Members", justify="right")
+        for i, c in enumerate(chats, 1):
+            table.add_row(
+                str(i),
+                c["name"],
+                f"@{c['username']}" if c["username"] else "-",
+                c["type"],
+                str(c["members"]) if c["members"] else "-",
+            )
+        console.print(table)
+
+
     async def _edit_name(self, acc: Account) -> None:
         first = await _ask_text(
             f"First name [{acc.first_name}]:",
