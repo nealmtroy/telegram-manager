@@ -694,11 +694,18 @@ async def _start_broadcast(message: Message, uid: int) -> None:
             if round_failed:
                 log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
             # Send log via admin's Telethon account (not bot)
+            log_text = "\n".join(log_lines)
+            # Always send to admin via bot (private chat)
+            try:
+                await bot.send_message(uid, log_text)
+            except Exception:
+                pass
+            # Also send to LOG_CHAT_ID via Telethon if configured
             if log_dest:
                 log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
                 try:
                     await log_client.connect()
-                    await log_client.send_message(log_dest, "\n".join(log_lines))
+                    await log_client.send_message(log_dest, log_text)
                 except Exception:
                     pass
                 finally:
@@ -1262,11 +1269,18 @@ async def handle_text(message: Message) -> None:
                 if round_failed:
                     log_lines.append(f"Failed: {len(round_failed)}")
                     log_lines.append("Errors:\n  " + "\n  ".join(round_failed))
+                log_text = "\n".join(log_lines)
+                # Always send to admin via bot
+                try:
+                    await bot.send_message(uid, log_text)
+                except Exception:
+                    pass
+                # Also send to LOG_CHAT_ID via Telethon if configured
                 if log_dest:
                     log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
                     try:
                         await log_client.connect()
-                        await log_client.send_message(log_dest, "\n".join(log_lines))
+                        await log_client.send_message(log_dest, log_text)
                     except Exception:
                         pass
                     finally:
