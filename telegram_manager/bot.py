@@ -417,12 +417,13 @@ async def handle_text(message: Message) -> None:
             "client": client,
             "preset": preset,
         }
-        await message.answer(f"Code sent to {text}\nDevice: {preset.device_model}\n\nEnter the 5-digit code:")
+        await message.answer(f"Code sent to {text}\nDevice: {preset.device_model}\n\nEnter code with spaces (e.g. 3 6 8 1 5):")
 
     elif action == "login_code":
         client = state["client"]
+        code = text.replace(" ", "")
         try:
-            await client.sign_in(state["phone"], text, phone_code_hash=state["phone_code_hash"])
+            await client.sign_in(state["phone"], code, phone_code_hash=state["phone_code_hash"])
         except PhoneCodeInvalidError:
             await message.answer("Invalid code. Try again:")
             return
