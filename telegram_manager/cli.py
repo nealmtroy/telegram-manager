@@ -194,12 +194,21 @@ class InteractiveCLI:
             f"What to do on [{acc.alias}]?",
             choices=[
                 Choice(title="Get profile (get_me)", value="me"),
+                Choice(title="Edit name", value="edit_name"),
+                Choice(title="Edit bio", value="edit_bio"),
+                Choice(title="Edit username", value="edit_username"),
                 Choice(title="Send a message", value="send"),
                 Choice(title="Back", value="back"),
             ],
         ).ask_async()
         if action == "me":
             await self._show_me([acc])
+        elif action == "edit_name":
+            await self._edit_name(acc)
+        elif action == "edit_bio":
+            await self._edit_bio(acc)
+        elif action == "edit_username":
+            await self._edit_username(acc)
         elif action == "send":
             await self._send_message(accounts=[acc])
 
@@ -303,6 +312,51 @@ class InteractiveCLI:
         console.print(f"[green]Logged out[/green] {acc.alias}.")
 
     # ---- shared sub-flows ----------------------------------------------
+    async def _edit_name(self, acc: Account) -> None:
+        first = await _ask_text(
+            f"First name [{acc.first_name}]:",
+            default=acc.first_name,
+            validate=lambda s: bool(s and s.strip()),
+        )
+        last = await _ask_text(
+            f"Last name (leave empty to clear) [{acc.last_name}]:",
+            default=acc.last_name,
+        )
+
+        async def _action(client, _acc):
+            from telethon.tl.functions.account import UpdateProfileRequest
+            await client(UpdateProfileRequest(first_name=first.strip(), last_name=last.strip()))
+            return f"{first.strip()} {last.strip()}".strip()
+
+        result = await self.manager.run_on(acc.phone, _action)
+        console.print(f"[green]Name updated:[/green] {result}")
+
+    async def _edit_bio(self, acc: Account) -> None:
+        bio = await _ask_text("New bio (max 70 chars, empty to clear):", default="")
+
+        async def _action(client, _acc):
+            from telethon.tl.functions.account import UpdateProfileRequest
+            await client(UpdateProfileRequest(about=bio.strip()))
+            return bio.strip() or "(cleared)"
+
+        result = await self.manager.run_on(acc.phone, _action)
+        console.print(f"[green]Bio updated:[/green] {result}")
+
+    async def _edit_username(self, acc: Account) -> None:
+        current = acc.username or ""
+        username = await _ask_text(
+            f"New username (without @, empty to remove) [{current}]:",
+            default=current,
+        )
+
+        async def _action(client, _acc):
+            from telethon.tl.functions.account import UpdateUsernameRequest
+            await client(UpdateUsernameRequest(username=username.strip()))
+            return f"@{username.strip()}" if username.strip() else "(removed)"
+
+        result = await self.manager.run_on(acc.phone, _action)
+        console.print(f"[green]Username updated:[/green] {result}")
+
     async def _show_me(self, accounts: List[Account]) -> None:
         results = await self.manager.run_on_all(
             _action_get_me, accounts=accounts
