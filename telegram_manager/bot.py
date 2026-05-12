@@ -822,12 +822,13 @@ async def handle_text(message: Message) -> None:
             "client": client,
             "preset": preset,
         }
-        await message.answer(
+        sent_msg = await message.answer(
             f"Code sent to {text}\nDevice: {preset.device_model}\n\n"
             "⚠️ PENTING: Ketik kode PAKAI SPASI\n"
             "Contoh: 3 6 8 1 5\n\n"
             "Jangan ketik tanpa spasi, Telegram akan otomatis membatalkan kode!"
         )
+        _state[uid]["code_sent_msg"] = sent_msg.message_id
         # Auto-delete user's phone number message
         try:
             await message.delete()
@@ -1352,6 +1353,14 @@ async def _finish_login(message: Message, admin_id: int) -> None:
     state = _state.pop(admin_id)
     client = state["client"]
     me = await client.get_me()
+
+    # Delete the "Code sent" instruction message
+    code_msg_id = state.get("code_sent_msg")
+    if code_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, code_msg_id)
+        except Exception:
+            pass
 
     # Anti-double: block only if managed by ANOTHER admin
     if is_registered_admin(me.id) and me.id != admin_id:
