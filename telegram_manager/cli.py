@@ -320,7 +320,6 @@ class InteractiveCLI:
     # ---- shared sub-flows ----------------------------------------------
     async def _list_chats(self, acc: Account) -> None:
         async def _action(client, _acc):
-            from telethon.tl.types import Channel, Chat, Megagroup
             dialogs = await client.get_dialogs()
             chats = []
             for d in dialogs:
@@ -328,11 +327,11 @@ class InteractiveCLI:
                 if hasattr(entity, "megagroup"):
                     if entity.megagroup:
                         chat_type = "Group"
-                    elif entity.broadcast:
+                    elif getattr(entity, "broadcast", False):
                         chat_type = "Channel"
                     else:
                         chat_type = "Group"
-                elif hasattr(entity, "participants_count"):
+                elif hasattr(entity, "participants_count") and not hasattr(entity, "phone"):
                     chat_type = "Group"
                 else:
                     continue
