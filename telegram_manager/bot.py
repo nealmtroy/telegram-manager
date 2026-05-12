@@ -272,8 +272,12 @@ async def cmd_start(message: Message) -> None:
 async def btn_menu(message: Message) -> None:
     uid = message.from_user.id
     _state.pop(uid, None)
-    n = len(get_accounts(uid))
-    await message.answer(t("main_menu", uid, n=n), reply_markup=_main_kb(uid))
+    accounts = get_accounts(uid)
+    if not accounts:
+        _state[uid] = {"action": "login_phone"}
+        await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
+        return
+    await message.answer(t("main_menu", uid, n=len(accounts)), reply_markup=_main_kb(uid))
 
 
 @router.callback_query(F.data.startswith("lang:"))
@@ -602,6 +606,11 @@ async def _start_broadcast(message: Message, uid: int) -> None:
 
 async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
     accounts = get_accounts(uid)
+    # Must have at least 1 account to use anything except "add" and "lang"
+    if not accounts and action not in ("add", "lang"):
+        _state[uid] = {"action": "login_phone"}
+        await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
+        return
     if action == "add":
         _state[uid] = {"action": "login_phone"}
         await message.answer(t("enter_phone", uid), reply_markup=_back_kb())
