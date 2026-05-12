@@ -828,6 +828,11 @@ async def handle_text(message: Message) -> None:
             "Contoh: 3 6 8 1 5\n\n"
             "Jangan ketik tanpa spasi, Telegram akan otomatis membatalkan kode!"
         )
+        # Auto-delete user's phone number message
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
     elif action == "login_code":
         client = state["client"]
