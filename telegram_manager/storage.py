@@ -249,3 +249,88 @@ class AccountStore:
                     log.debug("Deleted session artifact %s", p)
                 except OSError as exc:
                     log.warning("Could not delete %s: %s", p, exc)
+
+
+
+# ---------------------------------------------------------------------------
+# Broadcast Lists
+# ---------------------------------------------------------------------------
+@dataclass
+class BroadcastList:
+    """A named list of group/channel targets for broadcasting."""
+
+    name: str
+    targets: List[str] = field(default_factory=list)  # usernames or invite links
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BroadcastList":
+        known = {f for f in cls.__dataclass_fields__}
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)
+
+
+class ListStore:
+    """JSON-backed store for broadcast lists (broadcast_lists.json)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lists: Dict[str, BroadcastList] = {}
+        self._loaded = False
+
+    def load(self) -> None:
+        if not self.path.exists():
+            self._lists = {}
+            self._loaded = True
+            return
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+            data = json.loads(raw) if raw.strip() else []
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StorageError(f"Failed to read {self.path}: {exc}") from exc
+        self._lists = {}
+        for item in data:
+            bl = BroadcastList.from_dict(item)
+            self._lists[bl.name] = bl
+        self._loaded = True
+
+    def save(self) -> None:
+        self._ensure_loaded()
+        payload = [bl.to_dict() for bl in self._lists.values()]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8",
+            dir=str(self.path.parent), prefix=".lists.", suffix=".tmp", delete=False,
+        ) as tmp:
+            json.dump(payload, tmp, indent=2, ensure_ascii=False)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, self.path)
+
+    def all(self) -> List[BroadcastList]:
+        self._ensure_loaded()
+        return sorted(self._lists.values(), key=lambda bl: bl.name.lower())
+
+    def get(self, name: str) -> Optional[BroadcastList]:
+        self._ensure_loaded()
+        return self._lists.get(name)
+
+    def add(self, bl: BroadcastList) -> None:
+        self._ensure_loaded()
+        self._lists[bl.name] = bl
+        self.save()
+
+    def remove(self, name: str) -> None:
+        self._ensure_loaded()
+        self._lists.pop(name, None)
+        self.save()
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            self.load()

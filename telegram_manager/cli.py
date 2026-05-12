@@ -27,7 +27,7 @@ from .exceptions import (
 )
 from .logger import get_logger
 from .manager import BroadcastResult, TelegramManager
-from .storage import Account
+from .storage import Account, BroadcastList, ListStore
 
 log = get_logger("cli")
 console = Console()
@@ -41,6 +41,9 @@ class InteractiveCLI:
 
     def __init__(self, manager: TelegramManager) -> None:
         self.manager = manager
+        self.list_store = ListStore(
+            manager.store.accounts_file.parent / "broadcast_lists.json"
+        )
 
     # ---- entry point ----------------------------------------------------
     async def run(self) -> None:
@@ -90,6 +93,7 @@ class InteractiveCLI:
             Choice(title="🫀  Health check (all)", value="health"),
             Choice(title="👤  Single-account action", value="single"),
             Choice(title="📣  Multi-account action", value="multi"),
+            Choice(title="📝  Broadcast lists", value="lists"),
             Choice(title="♻️   Re-login account", value="relogin"),
             Choice(title="🗑   Remove account", value="remove"),
             Choice(title="🚪  Logout (revoke session)", value="logout"),
@@ -227,6 +231,7 @@ class InteractiveCLI:
             choices=[
                 Choice(title="Get profile (get_me) for each", value="me"),
                 Choice(title="Join groups/channels", value="join"),
+                Choice(title="Broadcast to list (auto-join + delay)", value="broadcast_list"),
                 Choice(title="Broadcast a message", value="send"),
                 Choice(title="Back", value="back"),
             ],
@@ -235,8 +240,65 @@ class InteractiveCLI:
             await self._show_me(accounts)
         elif action == "join":
             await self._join_chats(accounts)
+        elif action == "broadcast_list":
+            await self._broadcast_to_list(accounts)
         elif action == "send":
             await self._send_message(accounts=accounts)
+
+    async def manage_lists(self) -> None:
+        """Create, view, delete broadcast lists."""
+        lists = self.list_store.all()
+        choices = [
+            Choice(title="Create new list", value="create"),
+        ]
+        if lists:
+            choices.append(Choice(title="View lists", value="view"))
+            choices.append(Choice(title="Delete a list", value="delete"))
+        choices.append(Choice(title="Back", value=None))
+
+        action = await questionary.select(
+            f"Broadcast Lists ({len(lists)}):", choices=choices
+        ).ask_async()
+        if action is None:
+            return
+
+        if action == "create":
+            name = await _ask_text(
+                "List name:", validate=lambda s: bool(s and s.strip())
+            )
+            targets: List[str] = []
+            console.print("[dim]Enter group/channel usernames or invite links. Empty to finish.[/dim]")
+            while True:
+                t = await _ask_text(
+                    f"  Target ({len(targets)} added, empty to finish):", default=""
+                )
+                if not t:
+                    break
+                targets.append(t.strip())
+            if not targets:
+                console.print("[dim]No targets, list not created.[/dim]")
+                return
+            bl = BroadcastList(name=name.strip(), targets=targets)
+            self.list_store.add(bl)
+            console.print(f"[green]List '{bl.name}' created with {len(bl.targets)} target(s).[/green]")
+
+        elif action == "view":
+            for bl in lists:
+                table = Table(title=f"List: {bl.name} ({len(bl.targets)} targets)", show_lines=False)
+                table.add_column("#", justify="right", style="dim")
+                table.add_column("Target")
+                for i, t in enumerate(bl.targets, 1):
+                    table.add_row(str(i), t)
+                console.print(table)
+
+        elif action == "delete":
+            del_choices = [Choice(title=bl.name, value=bl.name) for bl in lists]
+            del_choices.append(Choice(title="Cancel", value=None))
+            pick = await questionary.select("Delete which list?", choices=del_choices).ask_async()
+            if pick:
+                self.list_store.remove(pick)
+                console.print(f"[green]List '{pick}' deleted.[/green]")
+
 
     async def relogin(self) -> None:
         acc = await self._pick_account("Pick an account to re-login:")
@@ -549,6 +611,104 @@ class InteractiveCLI:
         )
         _render_broadcast_table(results, value_header="Profile")
 
+    async def _broadcast_to_list(self, accounts: List[Account]) -> None:
+        """Broadcast message to all targets in a list with auto-join and delay."""
+        import asyncio as _aio
+        import random as _random
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        lists = self.list_store.all()
+        if not lists:
+            console.print("[dim]No broadcast lists yet. Create one from the main menu.[/dim]")
+            return
+
+        # Pick list
+        list_choices = [Choice(title=f"{bl.name} ({len(bl.targets)} targets)", value=bl.name) for bl in lists]
+        list_choices.append(Choice(title="Cancel", value=None))
+        pick = await questionary.select("Pick a broadcast list:", choices=list_choices).ask_async()
+        if pick is None:
+            return
+        bl = self.list_store.get(pick)
+
+        # Message
+        text = await _ask_text("Message to broadcast:", validate=lambda s: bool(s and s.strip()))
+
+        # Delay settings
+        delay_mode = await questionary.select(
+            "Delay between each target?",
+            choices=[
+                Choice(title="Auto (random 3-10s)", value="auto"),
+                Choice(title="Manual (set seconds)", value="manual"),
+                Choice(title="No delay", value="none"),
+            ],
+        ).ask_async()
+
+        delay_min = 0.0
+        delay_max = 0.0
+        if delay_mode == "auto":
+            delay_min, delay_max = 3.0, 10.0
+        elif delay_mode == "manual":
+            raw = await _ask_text("Delay in seconds (e.g. 5 or 3-8 for range):", default="5")
+            if "-" in raw:
+                parts = raw.split("-")
+                delay_min, delay_max = float(parts[0]), float(parts[1])
+            else:
+                delay_min = delay_max = float(raw)
+
+        # Confirm
+        console.print(
+            f"\n[bold]Broadcast to {len(bl.targets)} target(s) "
+            f"from {len(accounts)} account(s)[/bold]"
+        )
+        console.print(f"  Message: {text[:60]}{'...' if len(text) > 60 else ''}")
+        if delay_mode != "none":
+            console.print(f"  Delay: {delay_min}-{delay_max}s between targets")
+        console.print(f"  Auto-join: enabled\n")
+        confirm = await questionary.confirm("Proceed?", default=True).ask_async()
+        if not confirm:
+            return
+
+        # Execute
+        async def _broadcast(client, acc):
+            results = []
+            for i, target in enumerate(bl.targets):
+                # Auto-join
+                try:
+                    if "t.me/+" in target or "joinchat/" in target:
+                        invite_hash = target.split("+")[-1].split("joinchat/")[-1]
+                        await client(ImportChatInviteRequest(invite_hash))
+                    else:
+                        username = target.lstrip("@").replace("https://t.me/", "")
+                        await client(JoinChannelRequest(username))
+                except Exception:
+                    pass  # already joined or error, continue anyway
+
+                # Send message
+                try:
+                    entity = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
+                    if "t.me/+" in target or "joinchat/" in target:
+                        # For invite links, get dialogs to find the chat
+                        dialogs = await client.get_dialogs(limit=5)
+                        # Just try sending to the most recent joined
+                        entity = dialogs[0].entity if dialogs else target
+                    await client.send_message(entity, text)
+                    results.append(f"{target}: sent")
+                except Exception as e:
+                    results.append(f"{target}: {type(e).__name__}")
+
+                # Delay between targets
+                if i < len(bl.targets) - 1 and delay_mode != "none":
+                    wait = _random.uniform(delay_min, delay_max)
+                    await _aio.sleep(wait)
+
+            return " | ".join(results)
+
+        console.print("[dim]Broadcasting...[/dim]")
+        broadcast_results = await self.manager.run_on_all(_broadcast, accounts=accounts)
+        _render_broadcast_table(broadcast_results, value_header="Results")
+
+
     async def _send_message(self, *, accounts: List[Account]) -> None:
         target = await _ask_text(
             "Target (username, @chat, user_id, or phone):",
@@ -691,6 +851,7 @@ class InteractiveCLI:
         "health": health_check,
         "single": single_action,
         "multi": multi_action,
+        "lists": manage_lists,
         "relogin": relogin,
         "remove": remove_account,
         "logout": logout,

@@ -13,6 +13,7 @@
 *.session-journal
 sessions/
 accounts.json
+broadcast_lists.json
 credentials.json
 config.ini
 !config.example.ini
