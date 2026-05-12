@@ -55,6 +55,37 @@ _state: Dict[int, dict] = {}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _entities_to_html(text: str, entities) -> str:
+    """Convert Telegram Bot API entities to HTML for Telethon."""
+    if not entities or not text:
+        return text
+    # Sort by offset descending so insertions don't shift positions
+    sorted_ents = sorted(entities, key=lambda e: e.offset, reverse=True)
+    result = text
+    for ent in sorted_ents:
+        start = ent.offset
+        end = ent.offset + ent.length
+        inner = result[start:end]
+        if ent.type == "bold":
+            inner = f"<b>{inner}</b>"
+        elif ent.type == "italic":
+            inner = f"<i>{inner}</i>"
+        elif ent.type == "underline":
+            inner = f"<u>{inner}</u>"
+        elif ent.type == "strikethrough":
+            inner = f"<s>{inner}</s>"
+        elif ent.type == "code":
+            inner = f"<code>{inner}</code>"
+        elif ent.type == "pre":
+            inner = f"<pre>{inner}</pre>"
+        elif ent.type == "text_link":
+            inner = f'<a href="{ent.url}">{inner}</a>'
+        elif ent.type == "spoiler":
+            inner = f"<tg-spoiler>{inner}</tg-spoiler>"
+        result = result[:start] + inner + result[end:]
+    return result
+
+
 def _client_from_session(session_string: str, preset_key: str) -> TelegramClient:
     cfg = load_config()
     preset = get_preset(preset_key)
@@ -248,6 +279,28 @@ async def btn_cleanup(message: Message) -> None:
 # ---------------------------------------------------------------------------
 # Text message handler — processes all state-driven input
 # ---------------------------------------------------------------------------
+@router.message(F.photo | F.video | F.document | F.animation)
+async def handle_media(message: Message) -> None:
+    """Handle media messages — only relevant during broadcast_msg state."""
+    uid = message.from_user.id
+    state = _state.get(uid)
+    if not state or state.get("action") != "broadcast_msg":
+        return
+    # Save full message and proceed to delay setup
+    _state[uid]["message"] = message
+    _state[uid]["action"] = "broadcast_delay_type"
+    buttons = [
+        [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
+        [KeyboardButton(text="<< Menu")],
+    ]
+    await message.answer(
+        "Media received.\n\nDelay mode:\n"
+        "• Per group — delay between each group\n"
+        "• Per round — delay after all groups done",
+        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+    )
+
+
 @router.message(F.text)
 async def handle_text(message: Message) -> None:
     uid = message.from_user.id
@@ -441,7 +494,8 @@ async def handle_text(message: Message) -> None:
             await message.answer("Pick a list from the buttons.")
 
     elif action == "broadcast_msg":
-        _state[uid]["text"] = text
+        # Save the full message (text + entities + media)
+        _state[uid]["message"] = message
         _state[uid]["action"] = "broadcast_delay_type"
         buttons = [
             [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
@@ -492,10 +546,36 @@ async def handle_text(message: Message) -> None:
             _state.pop(uid, None)
             return
 
-        final_text = st["text"]
+        # Build message content preserving formatting + media
+        src_msg = st["message"]
         watermark = os.getenv("WATERMARK", "")
+
+        # Get text with entities (bold, italic, etc.) -> convert to HTML
+        raw_text = src_msg.text or src_msg.caption or ""
+        entities = src_msg.entities or src_msg.caption_entities or []
+        msg_text = _entities_to_html(raw_text, entities)
+        has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
+
+        # Append watermark
         if watermark:
-            final_text += f"\n\n{watermark}"
+            msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
+
+        # Download media if present (for Telethon sending)
+        media_bytes = None
+        media_filename = None
+        if has_media:
+            if src_msg.photo:
+                media_bytes = await src_msg.bot.download(src_msg.photo[-1], destination=None)
+                media_filename = "photo.jpg"
+            elif src_msg.video:
+                media_bytes = await src_msg.bot.download(src_msg.video, destination=None)
+                media_filename = src_msg.video.file_name or "video.mp4"
+            elif src_msg.animation:
+                media_bytes = await src_msg.bot.download(src_msg.animation, destination=None)
+                media_filename = "animation.gif"
+            elif src_msg.document:
+                media_bytes = await src_msg.bot.download(src_msg.document, destination=None)
+                media_filename = src_msg.document.file_name or "file"
 
         delay_type = st["delay_type"]
         await message.answer(
@@ -503,6 +583,7 @@ async def handle_text(message: Message) -> None:
             f"List: {st['list']} ({len(bl.targets)} targets)\n"
             f"Accounts: {len(accounts)}\n"
             f"Delay: {delay_type.replace('_',' ')} | {delay_min}-{delay_max}s\n"
+            f"Media: {'yes' if has_media else 'text only'}\n"
             f"Watermark: {watermark or '(none)'}\n\n"
             f"Running... send 'stop' to stop",
             reply_markup=ReplyKeyboardMarkup(
@@ -542,7 +623,15 @@ async def handle_text(message: Message) -> None:
                             pass
                         try:
                             e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
-                            await client.send_message(e, final_text)
+                            if has_media and media_bytes:
+                                await client.send_file(
+                                    e, media_bytes,
+                                    caption=msg_text,
+                                    parse_mode="html",
+                                    file_name=media_filename,
+                                )
+                            else:
+                                await client.send_message(e, msg_text, parse_mode="html")
                         except (ChatWriteForbiddenError, UserBannedInChannelError):
                             await bot.send_message(chat_id, f"[{acc.alias}] Blocked from {target}")
                         except SlowModeWaitError as sme:
