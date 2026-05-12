@@ -501,9 +501,17 @@ async def cb_acc(cq: CallbackQuery) -> None:
     if not acc:
         await cq.message.edit_text("Not found.")
         return
-    await cq.message.edit_text(
-        f"[{acc.alias}]\nPhone: {acc.phone}\nName: {acc.first_name} {acc.last_name}\n"
-        f"Username: @{acc.username or '-'}\n2FA: {'yes' if acc.is_2fa else 'no'}")
+    name = acc.display_name
+    info = f"👤 {name}\n📱 {acc.phone}"
+    if acc.username:
+        info += f"\n🔗 @{acc.username}"
+    info += f"\n🔐 2FA: {'yes' if acc.is_2fa else 'no'}"
+    info += f"\n📟 Device: {acc.device_preset}"
+    buttons = [
+        [InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit:{acc.alias}"),
+         InlineKeyboardButton(text="🗑 Remove", callback_data=f"clean:{acc.alias}")],
+    ]
+    await cq.message.edit_text(info, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +671,12 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
-        buttons = [[InlineKeyboardButton(text=f"{a.alias} ({a.phone})", callback_data=f"acc:{a.alias}")] for a in accounts]
+        buttons = []
+        for a in accounts:
+            label = a.display_name
+            if a.username:
+                label += f" (@{a.username})"
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"acc:{a.alias}")])
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "health":
         if not accounts:
@@ -699,19 +712,24 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
-        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"join:{a.alias}")] for a in accounts]
+        buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"join:{a.alias}")] for a in accounts]
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "edit":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
-        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"edit:{a.alias}")] for a in accounts]
+        buttons = []
+        for a in accounts:
+            label = a.display_name
+            if a.username:
+                label += f" (@{a.username})"
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"edit:{a.alias}")])
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
-        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"clean:{a.alias}")] for a in accounts]
+        buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"clean:{a.alias}")] for a in accounts]
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "transfer":
         if not accounts:
