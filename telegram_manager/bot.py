@@ -13,6 +13,9 @@ from typing import Dict
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -35,6 +38,7 @@ from .db import (
     delete_saved_msg,
     find_account,
     get_accounts,
+    get_admin_lang,
     get_list,
     get_lists,
     get_saved_messages,
@@ -44,9 +48,11 @@ from .db import (
     remove_account,
     remove_list,
     save_broadcast_msg,
+    set_admin_lang,
     transfer_all,
 )
 from .device_presets import get_preset
+from .i18n import LANGUAGES, get_lang, set_lang, t
 from .logger import get_logger
 
 log = get_logger("bot")
@@ -131,7 +137,7 @@ def _main_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="Health Check"), KeyboardButton(text="Broadcast")],
             [KeyboardButton(text="Manage Lists"), KeyboardButton(text="Join Group")],
             [KeyboardButton(text="Edit Profile"), KeyboardButton(text="Remove/Logout")],
-            [KeyboardButton(text="Transfer Data")],
+            [KeyboardButton(text="Transfer Data"), KeyboardButton(text="Lang")],
         ],
         resize_keyboard=True,
     )
@@ -162,16 +168,15 @@ async def cmd_start(message: Message) -> None:
         await message.answer("Access denied. Your account is managed by another admin.")
         return
     register_admin(uid, message.from_user.username or "", message.from_user.first_name or "")
+    # Load language preference
+    lang = get_admin_lang(uid)
+    set_lang(uid, lang)
     accounts = get_accounts(uid)
     if not accounts:
         _state[uid] = {"action": "login_phone"}
-        await message.answer(
-            "Welcome! You need to login an account first.\n\n"
-            "Enter phone number (e.g. +628123456789):",
-            reply_markup=_back_kb(),
-        )
+        await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
         return
-    await message.answer(f"Telegram Manager ({len(accounts)} accounts)", reply_markup=_main_kb())
+    await message.answer(t("main_menu", uid, n=len(accounts)), reply_markup=_main_kb())
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +319,33 @@ async def btn_transfer(message: Message) -> None:
         "Enter the Telegram user ID to transfer ALL your data to:",
         reply_markup=_back_kb(),
     )
+
+
+@router.message(F.text == "Lang")
+async def btn_lang(message: Message) -> None:
+    buttons = []
+    row = []
+    for code, name in LANGUAGES.items():
+        row.append(InlineKeyboardButton(text=name, callback_data=f"lang:{code}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    await message.answer(
+        "Choose language:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+@router.callback_query(F.data.startswith("lang:"))
+async def cb_lang(cq: CallbackQuery) -> None:
+    await cq.answer()
+    code = cq.data[5:]
+    uid = cq.from_user.id
+    set_lang(uid, code)
+    set_admin_lang(uid, code)
+    await cq.message.edit_text(t("lang_changed", uid))
 
 
 # ---------------------------------------------------------------------------

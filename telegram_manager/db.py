@@ -209,3 +209,17 @@ def get_saved_messages(admin_id: int) -> list:
 def delete_saved_msg(admin_id: int, name: str) -> None:
     db = _get_client()
     db.table("saved_messages").delete().eq("admin_id", admin_id).eq("name", name).execute()
+
+
+
+def set_admin_lang(user_id: int, lang: str) -> None:
+    db = _get_client()
+    db.table("admins").update({"lang": lang}).eq("user_id", user_id).execute()
+
+
+def get_admin_lang(user_id: int) -> str:
+    db = _get_client()
+    r = db.table("admins").select("lang").eq("user_id", user_id).execute()
+    if r.data and r.data[0].get("lang"):
+        return r.data[0]["lang"]
+    return "en"

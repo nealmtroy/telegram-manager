@@ -6,6 +6,7 @@ create table if not exists admins (
     user_id bigint primary key,
     username text,
     first_name text,
+    lang text default 'en',
     registered_at timestamptz default now()
 );
 
