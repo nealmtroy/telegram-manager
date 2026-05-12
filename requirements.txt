@@ -19,3 +19,6 @@ cryptg>=0.4.0
 
 # Telegram Bot API framework (for remote bot management)
 aiogram>=3.4.0,<4.0.0
+
+# Supabase client (database storage)
+supabase>=2.0.0
