@@ -130,17 +130,103 @@ def _log_chat_id():
         return raw  # username like @mylogchannel
 
 
-def _main_kb() -> ReplyKeyboardMarkup:
+def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
+    lang = get_lang(uid) if uid else "id"
+    labels = _MENU_LABELS.get(lang, _MENU_LABELS["id"])
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Add Account"), KeyboardButton(text="My Accounts")],
-            [KeyboardButton(text="Health Check"), KeyboardButton(text="Broadcast")],
-            [KeyboardButton(text="Manage Lists"), KeyboardButton(text="Join Group")],
-            [KeyboardButton(text="Edit Profile"), KeyboardButton(text="Remove/Logout")],
-            [KeyboardButton(text="Transfer Data"), KeyboardButton(text="Lang")],
+            [KeyboardButton(text=labels[0]), KeyboardButton(text=labels[1])],
+            [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
+            [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
+            [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
+            [KeyboardButton(text=labels[8]), KeyboardButton(text=labels[9])],
         ],
         resize_keyboard=True,
     )
+
+
+_MENU_LABELS = {
+    "id": [
+        "➕ Tambah Akun", "👤 Akun Saya",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 Kelola List", "📥 Join Group",
+        "✏️ Edit Profil", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
+    ],
+    "en": [
+        "➕ Add Account", "👤 My Accounts",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 Manage Lists", "📥 Join Group",
+        "✏️ Edit Profile", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Language",
+    ],
+    "ms": [
+        "➕ Tambah Akaun", "👤 Akaun Saya",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 Kelola List", "📥 Join Group",
+        "✏️ Edit Profil", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
+    ],
+    "th": [
+        "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 จัดการ List", "📥 เข้าร่วมกลุ่ม",
+        "✏️ แก้ไขโปรไฟล์", "🗑 ลบ/Logout",
+        "🔄 โอนข้อมูล", "🌐 ภาษา",
+    ],
+    "vi": [
+        "➕ Thêm TK", "👤 Tài khoản",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 Quản lý List", "📥 Tham gia",
+        "✏️ Sửa hồ sơ", "🗑 Xóa/Logout",
+        "🔄 Chuyển", "🌐 Ngôn ngữ",
+    ],
+    "zh": [
+        "➕ 添加账号", "👤 我的账号",
+        "💚 健康检查", "📣 广播",
+        "📋 管理列表", "📥 加入群组",
+        "✏️ 编辑资料", "🗑 删除/登出",
+        "🔄 转移", "🌐 语言",
+    ],
+    "ja": [
+        "➕ アカウント追加", "👤 マイアカウント",
+        "💚 ヘルスチェック", "📣 ブロードキャスト",
+        "📋 リスト管理", "📥 グループ参加",
+        "✏️ プロフィール編集", "🗑 削除/ログアウト",
+        "🔄 転送", "🌐 言語",
+    ],
+    "ko": [
+        "➕ 계정 추가", "👤 내 계정",
+        "💚 상태 확인", "📣 브로드캐스트",
+        "📋 목록 관리", "📥 그룹 참여",
+        "✏️ 프로필 편집", "🗑 삭제/로그아웃",
+        "🔄 전송", "🌐 언어",
+    ],
+    "hi": [
+        "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 List प्रबंधन", "📥 Group जॉइन",
+        "✏️ प्रोफ़ाइल एडिट", "🗑 हटाएं/Logout",
+        "🔄 ट्रांसफर", "🌐 भाषा",
+    ],
+    "fil": [
+        "➕ Dagdag Account", "👤 Mga Account",
+        "💚 Health Check", "📣 Broadcast",
+        "📋 Manage Lists", "📥 Join Group",
+        "✏️ Edit Profile", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Wika",
+    ],
+}
+
+
+def _get_menu_action(text: str) -> str | None:
+    """Map any language button text to action key."""
+    for labels in _MENU_LABELS.values():
+        if text in labels:
+            idx = labels.index(text)
+            return ["add", "accounts", "health", "broadcast",
+                    "lists", "join", "edit", "cleanup", "transfer", "lang"][idx]
+    return None
 
 
 def _back_kb() -> ReplyKeyboardMarkup:
@@ -182,170 +268,193 @@ async def cmd_start(message: Message) -> None:
 # ---------------------------------------------------------------------------
 # Main menu button handlers
 # ---------------------------------------------------------------------------
-@router.message(F.text == "<< Menu")
+@router.message(F.text.in_({"<< Menu", "<< menu"}))
 async def btn_menu(message: Message) -> None:
-    _state.pop(message.from_user.id, None)
-    n = len(get_accounts(message.from_user.id))
-    await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
-
-
-@router.message(F.text == "Add Account")
-async def btn_add(message: Message) -> None:
-    _state[message.from_user.id] = {"action": "login_phone"}
-    await message.answer("Enter phone number (e.g. +628123456789):", reply_markup=_back_kb())
-
-
-@router.message(F.text == "My Accounts")
-async def btn_accounts(message: Message) -> None:
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts yet.", reply_markup=_main_kb())
-        return
-    lines = [f"{i}. [{a.alias}] {a.phone} — {a.display_name}" for i, a in enumerate(accounts, 1)]
-    await message.answer("\n".join(lines), reply_markup=_main_kb())
-
-
-@router.message(F.text == "Health Check")
-async def btn_health(message: Message) -> None:
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.", reply_markup=_main_kb())
-        return
-    await message.answer("Checking...")
-    lines = []
-    for acc in accounts:
-        client = _client_from_session(acc.session_string, acc.device_preset)
-        try:
-            await client.connect()
-            me = await client.get_me()
-            lines.append(f"[{acc.alias}] OK — {me.first_name}")
-        except Exception as e:
-            lines.append(f"[{acc.alias}] FAIL — {type(e).__name__}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-    await message.answer("\n".join(lines), reply_markup=_main_kb())
-
-
-@router.message(F.text == "Broadcast")
-async def btn_broadcast(message: Message) -> None:
     uid = message.from_user.id
-    lists = get_lists(uid)
-    if not lists:
-        await message.answer("No lists. Create one first via 'Manage Lists'.", reply_markup=_main_kb())
-        return
-    buttons = [[KeyboardButton(text=f"bc:{bl.name}")] for bl in lists]
-    buttons.append([KeyboardButton(text="<< Menu")])
-    await message.answer(
-        "Pick a list:",
-        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-    )
-    _state[uid] = {"action": "broadcast_pick"}
-
-
-@router.message(F.text == "Manage Lists")
-async def btn_lists(message: Message) -> None:
-    lists = get_lists(message.from_user.id)
-    lines = []
-    if lists:
-        for bl in lists:
-            lines.append(f"  {bl.name} ({len(bl.targets)} targets)")
-    buttons = [[KeyboardButton(text="+ Create List")]]
-    if lists:
-        buttons.append([KeyboardButton(text="Delete List")])
-    buttons.append([KeyboardButton(text="<< Menu")])
-    text = "Lists:\n" + "\n".join(lines) if lines else "No lists yet."
-    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
-
-
-@router.message(F.text == "+ Create List")
-async def btn_createlist(message: Message) -> None:
-    _state[message.from_user.id] = {"action": "createlist_name"}
-    await message.answer("Enter list name:", reply_markup=_back_kb())
-
-
-@router.message(F.text == "Delete List")
-async def btn_deletelist(message: Message) -> None:
-    lists = get_lists(message.from_user.id)
-    if not lists:
-        await message.answer("No lists.", reply_markup=_main_kb())
-        return
-    buttons = [[KeyboardButton(text=f"del:{bl.name}")] for bl in lists]
-    buttons.append([KeyboardButton(text="<< Menu")])
-    _state[message.from_user.id] = {"action": "deletelist_pick"}
-    await message.answer("Pick list to delete:", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
-
-
-@router.message(F.text == "Join Group")
-async def btn_join(message: Message) -> None:
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.", reply_markup=_main_kb())
-        return
-    _state[message.from_user.id] = {"action": "join_pick"}
-    await message.answer("Pick account:", reply_markup=_accounts_kb(message.from_user.id))
-
-
-@router.message(F.text == "Edit Profile")
-async def btn_edit(message: Message) -> None:
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.", reply_markup=_main_kb())
-        return
-    _state[message.from_user.id] = {"action": "edit_pick"}
-    await message.answer("Pick account to edit:", reply_markup=_accounts_kb(message.from_user.id))
-
-
-@router.message(F.text == "Remove/Logout")
-async def btn_cleanup(message: Message) -> None:
-    accounts = get_accounts(message.from_user.id)
-    if not accounts:
-        await message.answer("No accounts.", reply_markup=_main_kb())
-        return
-    _state[message.from_user.id] = {"action": "cleanup_pick"}
-    await message.answer("Pick account:", reply_markup=_accounts_kb(message.from_user.id))
-
-
-@router.message(F.text == "Transfer Data")
-async def btn_transfer(message: Message) -> None:
-    uid = message.from_user.id
-    accounts = get_accounts(uid)
-    if not accounts:
-        await message.answer("No accounts to transfer.", reply_markup=_main_kb())
-        return
-    _state[uid] = {"action": "transfer_target"}
-    await message.answer(
-        f"You have {len(accounts)} account(s) + lists.\n\n"
-        "Enter the Telegram user ID to transfer ALL your data to:",
-        reply_markup=_back_kb(),
-    )
-
-
-@router.message(F.text == "Lang")
-async def btn_lang(message: Message) -> None:
-    buttons = []
-    row = []
-    for code, name in LANGUAGES.items():
-        row.append(InlineKeyboardButton(text=name, callback_data=f"lang:{code}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    await message.answer(
-        "Choose language:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-    )
+    _state.pop(uid, None)
+    n = len(get_accounts(uid))
+    await message.answer(t("main_menu", uid, n=n), reply_markup=_main_kb(uid))
 
 
 @router.callback_query(F.data.startswith("lang:"))
 async def cb_lang(cq: CallbackQuery) -> None:
     await cq.answer()
-    code = cq.data[5:]
     uid = cq.from_user.id
-    set_lang(uid, code)
-    set_admin_lang(uid, code)
+    set_lang(uid, cq.data[5:])
+    set_admin_lang(uid, cq.data[5:])
     await cq.message.edit_text(t("lang_changed", uid))
+    await cq.message.answer(t("main_menu", uid, n=len(get_accounts(uid))), reply_markup=_main_kb(uid))
+
+
+@router.callback_query(F.data.startswith("bc:"))
+async def cb_bc(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    list_name = cq.data[3:]
+    saved = get_saved_messages(uid)
+    _state[uid] = {"action": "broadcast_msg_choice", "list": list_name}
+    buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"sm:{s['name']}")] for s in saved]
+    buttons.append([InlineKeyboardButton(text="New message", callback_data="newmsg")])
+    await cq.message.edit_text(f"List: {list_name}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "newmsg")
+async def cb_newmsg(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    _state[uid]["action"] = "broadcast_msg"
+    await cq.message.edit_text(t("broadcast_send_msg", uid))
+
+
+@router.callback_query(F.data.startswith("sm:"))
+async def cb_sm(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    found = next((s for s in get_saved_messages(uid) if s["name"] == cq.data[3:]), None)
+    if not found:
+        await cq.message.edit_text("Not found.")
+        return
+    _state[uid]["saved_text"] = found["text"]
+    _state[uid]["action"] = "broadcast_delay_type"
+    buttons = [[InlineKeyboardButton(text="Per group", callback_data="dt:per_group"),
+                InlineKeyboardButton(text="Per round", callback_data="dt:per_round")]]
+    await cq.message.edit_text(t("delay_mode", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("dt:"))
+async def cb_dt(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    _state[uid]["delay_type"] = cq.data[3:]
+    _state[uid]["action"] = "broadcast_delay_value"
+    buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dv:auto"),
+                InlineKeyboardButton(text="No delay", callback_data="dv:none")]]
+    await cq.message.edit_text(t("delay_value", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("dv:"))
+async def cb_dv(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    if cq.data[3:] == "auto":
+        _state[uid]["delay"] = (3.0, 10.0)
+    else:
+        _state[uid]["delay"] = (0.0, 0.0)
+    _state[uid]["action"] = "broadcasting"
+    await cq.message.edit_text(t("broadcast_running", uid))
+    await _start_broadcast(cq.message, uid)
+
+
+@router.callback_query(F.data == "createlist")
+async def cb_cl(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "createlist_name"}
+    await cq.message.edit_text("Enter list name:")
+
+
+@router.callback_query(F.data.startswith("vl:"))
+async def cb_vl(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    bl = get_list(uid, cq.data[3:])
+    if not bl:
+        await cq.message.edit_text("Not found.")
+        return
+    targets = "\n".join(f"  {i}. {t_}" for i, t_ in enumerate(bl.targets, 1))
+    buttons = [[InlineKeyboardButton(text="Delete", callback_data=f"dl:{bl.name}")]]
+    await cq.message.edit_text(f"{bl.name}:\n{targets}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("dl:"))
+async def cb_dl(cq: CallbackQuery) -> None:
+    await cq.answer()
+    remove_list(cq.from_user.id, cq.data[3:])
+    await cq.message.edit_text("Deleted.")
+
+
+@router.callback_query(F.data.startswith("join:"))
+async def cb_join(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "join_target", "alias": cq.data[5:]}
+    await cq.message.edit_text("Enter group/channel username or invite link:")
+
+
+@router.callback_query(F.data.startswith("edit:"))
+async def cb_edit(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[5:]
+    buttons = [[InlineKeyboardButton(text="Name", callback_data=f"en:{alias}"),
+                InlineKeyboardButton(text="Bio", callback_data=f"eb:{alias}"),
+                InlineKeyboardButton(text="Username", callback_data=f"eu:{alias}")]]
+    await cq.message.edit_text(f"[{alias}] Edit:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("en:"))
+async def cb_en(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "edit_name", "alias": cq.data[3:]}
+    await cq.message.edit_text("Enter new name (first last):")
+
+
+@router.callback_query(F.data.startswith("eb:"))
+async def cb_eb(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "edit_bio", "alias": cq.data[3:]}
+    await cq.message.edit_text("Enter new bio:")
+
+
+@router.callback_query(F.data.startswith("eu:"))
+async def cb_eu(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "edit_username", "alias": cq.data[3:]}
+    await cq.message.edit_text("Enter new username (without @):")
+
+
+@router.callback_query(F.data.startswith("clean:"))
+async def cb_clean(cq: CallbackQuery) -> None:
+    await cq.answer()
+    alias = cq.data[6:]
+    buttons = [[InlineKeyboardButton(text="Logout", callback_data=f"lo:{alias}"),
+                InlineKeyboardButton(text="Remove", callback_data=f"rm:{alias}")]]
+    await cq.message.edit_text(f"[{alias}]:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("lo:"))
+async def cb_lo(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    acc = find_account(uid, cq.data[3:])
+    if acc:
+        client = _client_from_session(acc.session_string, acc.device_preset)
+        try:
+            await client.connect()
+            await client.log_out()
+        except Exception:
+            pass
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+        remove_account(uid, acc.phone)
+    await cq.message.edit_text(f"[{cq.data[3:]}] Logged out.")
+
+
+@router.callback_query(F.data.startswith("rm:"))
+async def cb_rm(cq: CallbackQuery) -> None:
+    await cq.answer()
+    remove_account(cq.from_user.id, cq.data[3:])
+    await cq.message.edit_text("Removed.")
+
+
+@router.callback_query(F.data.startswith("acc:"))
+async def cb_acc(cq: CallbackQuery) -> None:
+    await cq.answer()
+    acc = find_account(cq.from_user.id, cq.data[4:])
+    if not acc:
+        await cq.message.edit_text("Not found.")
+        return
+    await cq.message.edit_text(
+        f"[{acc.alias}]\nPhone: {acc.phone}\nName: {acc.first_name} {acc.last_name}\n"
+        f"Username: @{acc.username or '-'}\n2FA: {'yes' if acc.is_2fa else 'no'}")
 
 
 # ---------------------------------------------------------------------------
@@ -373,21 +482,221 @@ async def handle_media(message: Message) -> None:
     )
 
 
+async def _start_broadcast(message: Message, uid: int) -> None:
+    """Start the continuous broadcast loop."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+    from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
+    from datetime import datetime, timezone
+
+    st = _state.get(uid, {})
+    bl = get_list(uid, st.get("list", ""))
+    accounts = get_accounts(uid)
+    if not bl or not accounts:
+        _state.pop(uid, None)
+        return
+
+    delay_min, delay_max = st.get("delay", (3.0, 10.0))
+    delay_type = st.get("delay_type", "per_group")
+
+    watermark = os.getenv("WATERMARK", "")
+    media_bytes = None
+    media_filename = None
+    has_media = False
+
+    if "saved_text" in st:
+        msg_text = st["saved_text"]
+    elif "message" in st:
+        src_msg = st["message"]
+        raw_text = src_msg.text or src_msg.caption or ""
+        entities = src_msg.entities or src_msg.caption_entities or []
+        msg_text = _entities_to_html(raw_text, entities)
+        has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
+        if has_media:
+            if src_msg.photo:
+                media_bytes = await src_msg.bot.download(src_msg.photo[-1], destination=None)
+                media_filename = "photo.jpg"
+            elif src_msg.video:
+                media_bytes = await src_msg.bot.download(src_msg.video, destination=None)
+                media_filename = src_msg.video.file_name or "video.mp4"
+            elif src_msg.animation:
+                media_bytes = await src_msg.bot.download(src_msg.animation, destination=None)
+                media_filename = "animation.gif"
+            elif src_msg.document:
+                media_bytes = await src_msg.bot.download(src_msg.document, destination=None)
+                media_filename = src_msg.document.file_name or "file"
+    else:
+        _state.pop(uid, None)
+        return
+
+    if watermark:
+        msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
+
+    bot = message.bot
+    log_dest = _log_chat_id() or message.chat.id
+    round_num = 0
+
+    while _state.get(uid, {}).get("action") == "broadcasting":
+        round_num += 1
+        round_success = []
+        round_failed = []
+
+        for acc in accounts:
+            if _state.get(uid, {}).get("action") != "broadcasting":
+                break
+            client = _client_from_session(acc.session_string, acc.device_preset)
+            try:
+                await client.connect()
+                await client.get_me()
+                for target in bl.targets:
+                    if _state.get(uid, {}).get("action") != "broadcasting":
+                        break
+                    try:
+                        if "t.me/+" in target or "joinchat/" in target:
+                            await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
+                        else:
+                            await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
+                    except Exception:
+                        pass
+                    try:
+                        e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
+                        if has_media and media_bytes:
+                            await client.send_file(e, media_bytes, caption=msg_text, parse_mode="html", file_name=media_filename)
+                        else:
+                            await client.send_message(e, msg_text, parse_mode="html")
+                        round_success.append(f"{acc.alias} -> {target}")
+                    except (ChatWriteForbiddenError, UserBannedInChannelError):
+                        round_failed.append(f"{acc.alias} -> {target}: Blocked")
+                    except SlowModeWaitError as sme:
+                        round_failed.append(f"{acc.alias} -> {target}: SlowMode {sme.seconds}s")
+                    except FloodWaitError as fw:
+                        round_failed.append(f"{acc.alias} -> {target}: Flood {fw.seconds}s")
+                        await asyncio.sleep(fw.seconds)
+                    except Exception as ex:
+                        round_failed.append(f"{acc.alias} -> {target}: {type(ex).__name__}")
+                    if delay_type == "per_group" and delay_max > 0:
+                        await asyncio.sleep(random.uniform(delay_min, delay_max))
+            except Exception as ex:
+                round_failed.append(f"{acc.alias}: {type(ex).__name__}")
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+
+        # Log summary per round
+        if _state.get(uid, {}).get("action") == "broadcasting":
+            now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            log_lines = [f"Round {round_num} | {now}", f"Sent: {len(round_success)}"]
+            if round_success:
+                log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
+            if round_failed:
+                log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
+            await bot.send_message(log_dest, "\n".join(log_lines))
+
+            if delay_type == "per_round" and delay_max > 0:
+                await asyncio.sleep(random.uniform(delay_min, delay_max))
+            else:
+                await asyncio.sleep(1)
+
+    await bot.send_message(message.chat.id, t("broadcast_stopped", uid), reply_markup=_main_kb(uid))
+
+
+async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
+    accounts = get_accounts(uid)
+    if action == "add":
+        _state[uid] = {"action": "login_phone"}
+        await message.answer(t("enter_phone", uid), reply_markup=_back_kb())
+    elif action == "accounts":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        buttons = [[InlineKeyboardButton(text=f"{a.alias} ({a.phone})", callback_data=f"acc:{a.alias}")] for a in accounts]
+        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "health":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        await message.answer("Checking...")
+        lines = []
+        for acc in accounts:
+            client = _client_from_session(acc.session_string, acc.device_preset)
+            try:
+                await client.connect()
+                me = await client.get_me()
+                lines.append(f"[{acc.alias}] OK — {me.first_name}")
+            except Exception as e:
+                lines.append(f"[{acc.alias}] FAIL — {type(e).__name__}")
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+        await message.answer("\n".join(lines), reply_markup=_main_kb(uid))
+    elif action == "broadcast":
+        lists = get_lists(uid)
+        if not lists:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"bc:{bl.name}")] for bl in lists]
+        await message.answer(t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "lists":
+        lists = get_lists(uid)
+        buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
+        buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
+        await message.answer("Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "join":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"join:{a.alias}")] for a in accounts]
+        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "edit":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"edit:{a.alias}")] for a in accounts]
+        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "cleanup":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"clean:{a.alias}")] for a in accounts]
+        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "transfer":
+        if not accounts:
+            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            return
+        _state[uid] = {"action": "transfer_target"}
+        await message.answer(f"Enter user ID to transfer {len(accounts)} account(s) to:", reply_markup=_back_kb())
+    elif action == "lang":
+        buttons, row = [], []
+        for code, name in LANGUAGES.items():
+            row.append(InlineKeyboardButton(text=name, callback_data=f"lang:{code}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        await message.answer("🌐", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
 @router.message(F.text)
 async def handle_text(message: Message) -> None:
     uid = message.from_user.id
     if not is_registered_admin(uid):
         return
 
+    text = message.text.strip()
     state = _state.get(uid)
+
+    # Check if it's a menu button press (no active state)
     if not state:
-        # No active state, show menu
+        menu_action = _get_menu_action(text)
+        if menu_action:
+            await _dispatch_menu(message, uid, menu_action)
+            return
         n = len(get_accounts(uid))
-        await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
+        await message.answer(t("main_menu", uid, n=n), reply_markup=_main_kb(uid))
         return
 
     action = state["action"]
-    text = message.text.strip()
 
     # --- Login flow ---
     if action == "login_phone":
@@ -557,49 +866,6 @@ async def handle_text(message: Message) -> None:
             if client.is_connected():
                 await client.disconnect()
 
-    # --- Broadcast pick ---
-    elif action == "broadcast_pick":
-        if text.startswith("bc:"):
-            list_name = text[3:]
-            saved = get_saved_messages(uid)
-            _state[uid] = {"action": "broadcast_msg_choice", "list": list_name}
-            buttons = []
-            if saved:
-                for s in saved:
-                    buttons.append([KeyboardButton(text=f"saved:{s['name']}")])
-            buttons.append([KeyboardButton(text="New message")])
-            buttons.append([KeyboardButton(text="<< Menu")])
-            await message.answer(
-                f"List: {list_name}\n\nPick saved message or send new:",
-                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-            )
-        else:
-            await message.answer("Pick a list from the buttons.")
-
-    elif action == "broadcast_msg_choice":
-        if text == "New message":
-            _state[uid]["action"] = "broadcast_msg"
-            await message.answer("Send the message (text/media):", reply_markup=_back_kb())
-        elif text.startswith("saved:"):
-            # Use saved message text
-            name = text[6:]
-            saved = get_saved_messages(uid)
-            found = next((s for s in saved if s["name"] == name), None)
-            if not found:
-                await message.answer("Not found.", reply_markup=_back_kb())
-                return
-            _state[uid]["saved_text"] = found["text"]
-            _state[uid]["action"] = "broadcast_delay_type"
-            buttons = [
-                [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
-                [KeyboardButton(text="<< Menu")],
-            ]
-            await message.answer(
-                f"Using saved: {name}\n\nDelay mode:",
-                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-            )
-        else:
-            await message.answer("Pick from buttons.")
 
     elif action == "broadcast_msg":
         # Save the full message (text + entities + media)

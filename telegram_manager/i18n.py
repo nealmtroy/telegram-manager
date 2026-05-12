@@ -193,7 +193,7 @@ def set_lang(user_id: int, lang: str) -> None:
 
 
 def get_lang(user_id: int) -> str:
-    return _user_lang.get(user_id, "en")
+    return _user_lang.get(user_id, "id")
 
 
 def t(key: str, user_id: int, **kwargs) -> str:
