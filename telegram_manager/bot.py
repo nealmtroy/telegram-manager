@@ -380,8 +380,38 @@ async def cb_vl(cq: CallbackQuery) -> None:
         await cq.message.edit_text("Not found.")
         return
     targets = "\n".join(f"  {i}. {t_}" for i, t_ in enumerate(bl.targets, 1))
-    buttons = [[InlineKeyboardButton(text="Delete", callback_data=f"dl:{bl.name}")]]
-    await cq.message.edit_text(f"{bl.name}:\n{targets}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    buttons = [
+        [InlineKeyboardButton(text="➕ Add", callback_data=f"la:{bl.name}"),
+         InlineKeyboardButton(text="➖ Remove", callback_data=f"lr:{bl.name}")],
+        [InlineKeyboardButton(text="🗑 Delete List", callback_data=f"dl:{bl.name}")],
+    ]
+    await cq.message.edit_text(f"📋 {bl.name}:\n{targets}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("la:"))
+async def cb_la(cq: CallbackQuery) -> None:
+    """Add targets to list."""
+    await cq.answer()
+    uid = cq.from_user.id
+    _state[uid] = {"action": "listadd_targets", "list": cq.data[3:]}
+    await cq.message.edit_text(
+        f"[{cq.data[3:]}] Kirim target yang mau ditambah:\n"
+        "(satu per baris — @username / chat_id / https://t.me/xxx)")
+
+
+@router.callback_query(F.data.startswith("lr:"))
+async def cb_lr(cq: CallbackQuery) -> None:
+    """Show numbered targets to remove."""
+    await cq.answer()
+    uid = cq.from_user.id
+    bl = get_list(uid, cq.data[3:])
+    if not bl or not bl.targets:
+        await cq.message.edit_text("List kosong.")
+        return
+    _state[uid] = {"action": "listremove_pick", "list": bl.name}
+    targets = "\n".join(f"  {i}. {t_}" for i, t_ in enumerate(bl.targets, 1))
+    await cq.message.edit_text(
+        f"[{bl.name}] Ketik nomor yang mau dihapus (pisah spasi):\n{targets}")
 
 
 @router.callback_query(F.data.startswith("dl:"))
@@ -820,6 +850,44 @@ async def handle_text(message: Message) -> None:
         else:
             state["targets"].append(text)
             await message.answer(f"Added: {text} ({len(state['targets'])} total)\n\nNext target or 'done':")
+
+    # --- List edit: add targets ---
+    elif action == "listadd_targets":
+        list_name = state["list"]
+        bl = get_list(uid, list_name)
+        if not bl:
+            await message.answer("List not found.", reply_markup=_back_kb())
+            _state.pop(uid, None)
+            return
+        new_targets = [line.strip() for line in text.split("\n") if line.strip()]
+        bl.targets.extend(new_targets)
+        add_list(bl)
+        _state.pop(uid, None)
+        await message.answer(
+            f"✅ Ditambah {len(new_targets)} target ke '{list_name}' (total: {len(bl.targets)})",
+            reply_markup=_main_kb(uid))
+
+    # --- List edit: remove targets ---
+    elif action == "listremove_pick":
+        list_name = state["list"]
+        bl = get_list(uid, list_name)
+        if not bl:
+            await message.answer("List not found.", reply_markup=_back_kb())
+            _state.pop(uid, None)
+            return
+        try:
+            indices = sorted([int(x) - 1 for x in text.split()], reverse=True)
+            removed = []
+            for i in indices:
+                if 0 <= i < len(bl.targets):
+                    removed.append(bl.targets.pop(i))
+            add_list(bl)
+            _state.pop(uid, None)
+            await message.answer(
+                f"✅ Dihapus {len(removed)} target dari '{list_name}' (sisa: {len(bl.targets)})",
+                reply_markup=_main_kb(uid))
+        except ValueError:
+            await message.answer("Ketik nomor yang mau dihapus (pisah spasi), contoh: 1 3 5")
 
     # --- Join ---
     elif action == "join_target":
