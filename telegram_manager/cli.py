@@ -366,75 +366,134 @@ class InteractiveCLI:
 
 
     async def _botfather(self, acc: Account) -> None:
-        """Interactive BotFather session — send commands and see responses."""
+        """Interactive BotFather session with bot list."""
         import asyncio as _aio
 
-        COMMANDS = [
-            "/mybots",
-            "/newbot",
-            "/setname",
-            "/setdescription",
-            "/setabouttext",
-            "/setuserpic",
-            "/setcommands",
-            "/deletebot",
-            "/token",
-            "/revoke",
-            "/setinline",
-            "/setinlinegeo",
-            "/setinlinefeedback",
-            "/setjoingroups",
-            "/setprivacy",
-            "/myapps",
-            "/newapp",
-            "/listapps",
-            "/editapp",
-            "/deleteapp",
-            "/cancel",
-            "/help",
-        ]
-
-        cmd = await questionary.select(
-            "BotFather command:", choices=[
-                Choice(title=c, value=c) for c in COMMANDS
-            ] + [Choice(title="Custom command...", value="_custom"),
-                 Choice(title="Back", value=None)],
-        ).ask_async()
-        if cmd is None:
-            return
-        if cmd == "_custom":
-            cmd = await _ask_text("Enter command/message to send to BotFather:")
-
-        async def _action(client, _acc):
-            await client.send_message("@BotFather", cmd)
-            await _aio.sleep(1.5)  # wait for BotFather reply
+        # Fetch bot list first
+        async def _get_bots(client, _acc):
+            await client.send_message("@BotFather", "/mybots")
+            await _aio.sleep(1.5)
             msgs = await client.get_messages("@BotFather", limit=1)
-            if msgs and msgs[0].sender_id == 93372553:  # BotFather's user_id
-                return msgs[0].text
-            return "(no response yet)"
+            if not msgs or msgs[0].sender_id != 93372553:
+                return []
+            # Parse inline keyboard buttons (bot list)
+            bots = []
+            if msgs[0].reply_markup:
+                for row in msgs[0].reply_markup.rows:
+                    for btn in row.buttons:
+                        if btn.text.startswith("@"):
+                            bots.append(btn.text)
+            return bots
 
-        console.print(f"[dim]Sending to BotFather: {cmd}[/dim]")
-        response = await self.manager.run_on(acc.phone, _action)
-        console.print(Panel.fit(response or "(empty)", title="BotFather", border_style="cyan"))
+        console.print("[dim]Fetching your bots from BotFather...[/dim]")
+        bots = await self.manager.run_on(acc.phone, _get_bots)
 
-        # Continue conversation loop
+        # Build menu
+        menu_choices = []
+        if bots:
+            for b in bots:
+                menu_choices.append(Choice(title=f"Manage {b}", value=("bot", b)))
+        menu_choices.extend([
+            Choice(title="/newbot — Create a new bot", value=("cmd", "/newbot")),
+            Choice(title="/myapps — List my apps", value=("cmd", "/myapps")),
+            Choice(title="/newapp — Create a new app", value=("cmd", "/newapp")),
+            Choice(title="Send any BotFather command...", value=("cmd", None)),
+            Choice(title="Chat with any bot...", value=("chat", None)),
+            Choice(title="Back", value=None),
+        ])
+
+        pick = await questionary.select(
+            f"BotFather ({len(bots)} bot{'s' if len(bots) != 1 else ''}):",
+            choices=menu_choices,
+        ).ask_async()
+        if pick is None:
+            return
+
+        action_type, value = pick
+
+        if action_type == "bot":
+            # Send the bot username to BotFather to select it
+            await self._bf_send(acc, value)
+        elif action_type == "cmd":
+            if value is None:
+                value = await _ask_text("Enter BotFather command:")
+            await self._bf_send(acc, value)
+        elif action_type == "chat":
+            target = await _ask_text("Bot username (e.g. @mybot):")
+            await self._chat_with_bot(acc, target.strip().lstrip("@"))
+
+    async def _bf_send(self, acc: Account, message: str) -> None:
+        """Send a message to BotFather and enter conversation loop."""
+        import asyncio as _aio
+
+        async def _send(client, _acc, msg=message):
+            await client.send_message("@BotFather", msg)
+            await _aio.sleep(1.5)
+            msgs = await client.get_messages("@BotFather", limit=1)
+            if msgs and msgs[0].sender_id == 93372553:
+                # Also grab inline buttons if any
+                buttons = []
+                if msgs[0].reply_markup:
+                    for row in msgs[0].reply_markup.rows:
+                        for btn in row.buttons:
+                            buttons.append(btn.text)
+                return {"text": msgs[0].text, "buttons": buttons}
+            return {"text": "(no response yet)", "buttons": []}
+
+        console.print(f"[dim]→ BotFather: {message}[/dim]")
+        result = await self.manager.run_on(acc.phone, _send)
+        console.print(Panel.fit(result["text"] or "(empty)", title="BotFather", border_style="cyan"))
+        if result["buttons"]:
+            console.print(f"[dim]Buttons: {', '.join(result['buttons'])}[/dim]")
+
+        # Conversation loop
         while True:
-            follow = await _ask_text(
-                "Reply to BotFather (empty to stop):", default=""
+            if result["buttons"]:
+                choices = [Choice(title=b, value=b) for b in result["buttons"]]
+                choices.append(Choice(title="Type custom reply...", value="_custom"))
+                choices.append(Choice(title="Done", value=None))
+                pick = await questionary.select("Pick a button or reply:", choices=choices).ask_async()
+                if pick is None:
+                    break
+                if pick == "_custom":
+                    follow = await _ask_text("Your reply:", default="")
+                    if not follow:
+                        break
+                else:
+                    follow = pick
+            else:
+                follow = await _ask_text("Reply (empty to stop):", default="")
+                if not follow:
+                    break
+
+            result = await self.manager.run_on(
+                acc.phone,
+                lambda client, _acc, msg=follow: _send(client, _acc, msg),
             )
-            if not follow:
+            console.print(Panel.fit(result["text"] or "(empty)", title="BotFather", border_style="cyan"))
+            if result["buttons"]:
+                console.print(f"[dim]Buttons: {', '.join(result['buttons'])}[/dim]")
+
+    async def _chat_with_bot(self, acc: Account, bot_username: str) -> None:
+        """Open a conversation with any bot."""
+        import asyncio as _aio
+
+        console.print(f"[dim]Chatting with @{bot_username} (empty to stop)[/dim]")
+        while True:
+            msg = await _ask_text(f"You → @{bot_username}:", default="")
+            if not msg:
                 break
 
-            async def _reply(client, _acc, msg=follow):
-                await client.send_message("@BotFather", msg)
-                await _aio.sleep(1.5)
-                msgs = await client.get_messages("@BotFather", limit=1)
-                if msgs and msgs[0].sender_id == 93372553:
+            async def _send(client, _acc, text=msg):
+                await client.send_message(bot_username, text)
+                await _aio.sleep(2)
+                msgs = await client.get_messages(bot_username, limit=1)
+                if msgs and msgs[0].out is False:
                     return msgs[0].text
                 return "(no response yet)"
 
-            response = await self.manager.run_on(acc.phone, _reply)
-            console.print(Panel.fit(response or "(empty)", title="BotFather", border_style="cyan"))
+            response = await self.manager.run_on(acc.phone, _send)
+            console.print(Panel.fit(response or "(empty)", title=f"@{bot_username}", border_style="green"))
 
 
     async def _edit_name(self, acc: Account) -> None:
