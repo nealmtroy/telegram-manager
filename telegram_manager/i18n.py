@@ -182,6 +182,18 @@ _STRINGS = {
         "hi": "भाषा हिन्दी में बदल दी गई।",
         "fil": "Wika ay naitakda sa Filipino.",
     },
+    "choose_lang": {
+        "en": "Choose your language:",
+        "id": "Pilih bahasa yang kamu inginkan:",
+        "ms": "Pilih bahasa anda:",
+        "th": "เลือกภาษาของคุณ:",
+        "vi": "Chọn ngôn ngữ của bạn:",
+        "zh": "选择你的语言：",
+        "ja": "言語を選択してください：",
+        "ko": "언어를 선택하세요:",
+        "hi": "अपनी भाषा चुनें:",
+        "fil": "Piliin ang iyong wika:",
+    },
 }
 
 # Default language

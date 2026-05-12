@@ -60,6 +60,21 @@ router = Router()
 
 # Per-user state for multi-step flows
 _state: Dict[int, dict] = {}
+_last_bot_msg: Dict[int, int] = {}  # uid -> message_id to delete
+
+
+async def _reply(message: Message, uid: int, text: str, **kwargs):
+    """Send reply and delete previous bot message to keep chat clean."""
+    # Delete previous bot message
+    prev = _last_bot_msg.get(uid)
+    if prev:
+        try:
+            await message.bot.delete_message(message.chat.id, prev)
+        except Exception:
+            pass
+    sent = await message.answer(text, **kwargs)
+    _last_bot_msg[uid] = sent.message_id
+    return sent
 
 
 # ---------------------------------------------------------------------------
@@ -609,22 +624,22 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
     # Must have at least 1 account to use anything except "add" and "lang"
     if not accounts and action not in ("add", "lang"):
         _state[uid] = {"action": "login_phone"}
-        await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
+        await _reply(message, uid, t("welcome_new", uid), reply_markup=_back_kb())
         return
     if action == "add":
         _state[uid] = {"action": "login_phone"}
-        await message.answer(t("enter_phone", uid), reply_markup=_back_kb())
+        await _reply(message, uid, t("enter_phone", uid), reply_markup=_back_kb())
     elif action == "accounts":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=f"{a.alias} ({a.phone})", callback_data=f"acc:{a.alias}")] for a in accounts]
-        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "health":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
-        await message.answer("Checking...")
+        await _reply(message, uid, "Checking...")
         lines = []
         for acc in accounts:
             client = _client_from_session(acc.session_string, acc.device_preset)
@@ -637,43 +652,43 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             finally:
                 if client.is_connected():
                     await client.disconnect()
-        await message.answer("\n".join(lines), reply_markup=_main_kb(uid))
+        await _reply(message, uid, "\n".join(lines), reply_markup=_main_kb(uid))
     elif action == "broadcast":
         lists = get_lists(uid)
         if not lists:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"bc:{bl.name}")] for bl in lists]
-        await message.answer(t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "lists":
         lists = get_lists(uid)
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
         buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
-        await message.answer("Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, "Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "join":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"join:{a.alias}")] for a in accounts]
-        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "edit":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"edit:{a.alias}")] for a in accounts]
-        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         buttons = [[InlineKeyboardButton(text=a.alias, callback_data=f"clean:{a.alias}")] for a in accounts]
-        await message.answer(t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "transfer":
         if not accounts:
-            await message.answer(t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
             return
         _state[uid] = {"action": "transfer_target"}
-        await message.answer(f"Enter user ID to transfer {len(accounts)} account(s) to:", reply_markup=_back_kb())
+        await _reply(message, uid, f"Enter user ID to transfer {len(accounts)} account(s) to:", reply_markup=_back_kb())
     elif action == "lang":
         buttons, row = [], []
         for code, name in LANGUAGES.items():
@@ -683,7 +698,7 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
                 row = []
         if row:
             buttons.append(row)
-        await message.answer("Pilih bahasa yang kamu inginkan:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("choose_lang", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 @router.message(F.text)
