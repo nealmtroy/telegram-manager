@@ -13,10 +13,9 @@ from typing import Dict
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
 )
 from telethon import TelegramClient
 from telethon.errors import (
@@ -79,37 +78,35 @@ def _new_client(preset_key: str = "random"):
     return client, preset
 
 
-def _main_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Add Account", callback_data="add"),
-         InlineKeyboardButton(text="My Accounts", callback_data="accounts")],
-        [InlineKeyboardButton(text="Health Check", callback_data="health"),
-         InlineKeyboardButton(text="Broadcast", callback_data="broadcast")],
-        [InlineKeyboardButton(text="Manage Lists", callback_data="lists"),
-         InlineKeyboardButton(text="Join Group", callback_data="join")],
-        [InlineKeyboardButton(text="Edit Profile", callback_data="edit"),
-         InlineKeyboardButton(text="Remove/Logout", callback_data="cleanup")],
-    ])
+def _main_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Add Account"), KeyboardButton(text="My Accounts")],
+            [KeyboardButton(text="Health Check"), KeyboardButton(text="Broadcast")],
+            [KeyboardButton(text="Manage Lists"), KeyboardButton(text="Join Group")],
+            [KeyboardButton(text="Edit Profile"), KeyboardButton(text="Remove/Logout")],
+        ],
+        resize_keyboard=True,
+    )
 
 
-def _back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="<< Menu", callback_data="menu")]
-    ])
+def _back_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="<< Menu")]],
+        resize_keyboard=True,
+    )
 
 
-def _accounts_kb(admin_id: int, action: str) -> InlineKeyboardMarkup:
-    """Generate account selection buttons."""
+def _accounts_kb(admin_id: int) -> ReplyKeyboardMarkup:
+    """Generate account selection as reply keyboard."""
     accounts = get_accounts(admin_id)
-    buttons = [[InlineKeyboardButton(
-        text=f"{a.alias} ({a.phone})", callback_data=f"{action}:{a.alias}"
-    )] for a in accounts]
-    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    buttons = [[KeyboardButton(text=a.alias)] for a in accounts]
+    buttons.append([KeyboardButton(text="<< Menu")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
 # ---------------------------------------------------------------------------
-# /start + menu
+# /start
 # ---------------------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
@@ -122,49 +119,39 @@ async def cmd_start(message: Message) -> None:
     await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
 
 
-@router.callback_query(F.data == "menu")
-async def cb_menu(cq: CallbackQuery) -> None:
-    await cq.answer()
-    _state.pop(cq.from_user.id, None)
-    n = len(get_accounts(cq.from_user.id))
-    await cq.message.edit_text(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
+# ---------------------------------------------------------------------------
+# Main menu button handlers
+# ---------------------------------------------------------------------------
+@router.message(F.text == "<< Menu")
+async def btn_menu(message: Message) -> None:
+    _state.pop(message.from_user.id, None)
+    n = len(get_accounts(message.from_user.id))
+    await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
 
 
-# ---------------------------------------------------------------------------
-# Add Account flow (button-driven)
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "add")
-async def cb_add(cq: CallbackQuery) -> None:
-    await cq.answer()
-    _state[cq.from_user.id] = {"action": "login_phone"}
-    await cq.message.edit_text("Enter phone number (e.g. +628123456789):", reply_markup=_back_kb())
+@router.message(F.text == "Add Account")
+async def btn_add(message: Message) -> None:
+    _state[message.from_user.id] = {"action": "login_phone"}
+    await message.answer("Enter phone number (e.g. +628123456789):", reply_markup=_back_kb())
 
 
-# ---------------------------------------------------------------------------
-# Accounts
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "accounts")
-async def cb_accounts(cq: CallbackQuery) -> None:
-    await cq.answer()
-    accounts = get_accounts(cq.from_user.id)
+@router.message(F.text == "My Accounts")
+async def btn_accounts(message: Message) -> None:
+    accounts = get_accounts(message.from_user.id)
     if not accounts:
-        await cq.message.edit_text("No accounts yet.", reply_markup=_back_kb())
+        await message.answer("No accounts yet.", reply_markup=_main_kb())
         return
     lines = [f"{i}. [{a.alias}] {a.phone} — {a.display_name}" for i, a in enumerate(accounts, 1)]
-    await cq.message.edit_text("\n".join(lines), reply_markup=_back_kb())
+    await message.answer("\n".join(lines), reply_markup=_main_kb())
 
 
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "health")
-async def cb_health(cq: CallbackQuery) -> None:
-    await cq.answer()
-    accounts = get_accounts(cq.from_user.id)
+@router.message(F.text == "Health Check")
+async def btn_health(message: Message) -> None:
+    accounts = get_accounts(message.from_user.id)
     if not accounts:
-        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        await message.answer("No accounts.", reply_markup=_main_kb())
         return
-    await cq.message.edit_text("Checking...")
+    await message.answer("Checking...")
     lines = []
     for acc in accounts:
         client = _client_from_session(acc.session_string, acc.device_preset)
@@ -177,217 +164,85 @@ async def cb_health(cq: CallbackQuery) -> None:
         finally:
             if client.is_connected():
                 await client.disconnect()
-    await cq.message.edit_text("\n".join(lines), reply_markup=_back_kb())
+    await message.answer("\n".join(lines), reply_markup=_main_kb())
 
 
-# ---------------------------------------------------------------------------
-# Broadcast
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "broadcast")
-async def cb_broadcast(cq: CallbackQuery) -> None:
-    await cq.answer()
-    lists = get_lists(cq.from_user.id)
+@router.message(F.text == "Broadcast")
+async def btn_broadcast(message: Message) -> None:
+    lists = get_lists(message.from_user.id)
     if not lists:
-        await cq.message.edit_text(
-            "No broadcast lists.\nUse 'Manage Lists' to create one first.",
-            reply_markup=_back_kb()
-        )
+        await message.answer("No lists. Create one first via 'Manage Lists'.", reply_markup=_main_kb())
         return
-    buttons = [[InlineKeyboardButton(
-        text=f"{bl.name} ({len(bl.targets)} targets)", callback_data=f"bc:{bl.name}"
-    )] for bl in lists]
-    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
-    await cq.message.edit_text("Pick a list to broadcast:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    buttons = [[KeyboardButton(text=f"bc:{bl.name}")] for bl in lists]
+    buttons.append([KeyboardButton(text="<< Menu")])
+    await message.answer(
+        "Pick a list:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+    )
+    _state[message.from_user.id] = {"action": "broadcast_pick"}
 
 
-@router.callback_query(F.data.startswith("bc:"))
-async def cb_broadcast_pick(cq: CallbackQuery) -> None:
-    await cq.answer()
-    list_name = cq.data[3:]
-    _state[cq.from_user.id] = {"action": "broadcast_msg", "list": list_name}
-    await cq.message.edit_text(f"List: {list_name}\n\nType the message to broadcast:", reply_markup=_back_kb())
-
-
-# ---------------------------------------------------------------------------
-# Lists management
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "lists")
-async def cb_lists(cq: CallbackQuery) -> None:
-    await cq.answer()
-    lists = get_lists(cq.from_user.id)
-    buttons = []
+@router.message(F.text == "Manage Lists")
+async def btn_lists(message: Message) -> None:
+    lists = get_lists(message.from_user.id)
+    lines = []
     if lists:
         for bl in lists:
-            buttons.append([InlineKeyboardButton(
-                text=f"{bl.name} ({len(bl.targets)})", callback_data=f"viewlist:{bl.name}"
-            )])
-    buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
-    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
-    await cq.message.edit_text("Broadcast Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+            lines.append(f"  {bl.name} ({len(bl.targets)} targets)")
+    buttons = [[KeyboardButton(text="+ Create List")]]
+    if lists:
+        buttons.append([KeyboardButton(text="Delete List")])
+    buttons.append([KeyboardButton(text="<< Menu")])
+    text = "Lists:\n" + "\n".join(lines) if lines else "No lists yet."
+    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
 
 
-@router.callback_query(F.data.startswith("viewlist:"))
-async def cb_viewlist(cq: CallbackQuery) -> None:
-    await cq.answer()
-    name = cq.data[9:]
-    bl = get_list(cq.from_user.id, name)
-    if not bl:
-        await cq.message.edit_text("List not found.", reply_markup=_back_kb())
+@router.message(F.text == "+ Create List")
+async def btn_createlist(message: Message) -> None:
+    _state[message.from_user.id] = {"action": "createlist_name"}
+    await message.answer("Enter list name:", reply_markup=_back_kb())
+
+
+@router.message(F.text == "Delete List")
+async def btn_deletelist(message: Message) -> None:
+    lists = get_lists(message.from_user.id)
+    if not lists:
+        await message.answer("No lists.", reply_markup=_main_kb())
         return
-    targets = "\n".join(f"  {i}. {t}" for i, t in enumerate(bl.targets, 1))
-    buttons = [
-        [InlineKeyboardButton(text="Delete this list", callback_data=f"dellist:{name}")],
-        [InlineKeyboardButton(text="<< Lists", callback_data="lists")],
-    ]
-    await cq.message.edit_text(f"List: {name}\n\n{targets}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    buttons = [[KeyboardButton(text=f"del:{bl.name}")] for bl in lists]
+    buttons.append([KeyboardButton(text="<< Menu")])
+    _state[message.from_user.id] = {"action": "deletelist_pick"}
+    await message.answer("Pick list to delete:", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
 
 
-@router.callback_query(F.data.startswith("dellist:"))
-async def cb_dellist(cq: CallbackQuery) -> None:
-    await cq.answer()
-    name = cq.data[8:]
-    remove_list(cq.from_user.id, name)
-    await cq.message.edit_text(f"List '{name}' deleted.", reply_markup=_back_kb())
-
-
-@router.callback_query(F.data == "createlist")
-async def cb_createlist(cq: CallbackQuery) -> None:
-    await cq.answer()
-    _state[cq.from_user.id] = {"action": "createlist_name"}
-    await cq.message.edit_text("Enter a name for the new list:", reply_markup=_back_kb())
-
-
-# ---------------------------------------------------------------------------
-# Join group
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "join")
-async def cb_join(cq: CallbackQuery) -> None:
-    await cq.answer()
-    accounts = get_accounts(cq.from_user.id)
+@router.message(F.text == "Join Group")
+async def btn_join(message: Message) -> None:
+    accounts = get_accounts(message.from_user.id)
     if not accounts:
-        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        await message.answer("No accounts.", reply_markup=_main_kb())
         return
-    await cq.message.edit_text("Pick account to join with:", reply_markup=_accounts_kb(cq.from_user.id, "join"))
+    _state[message.from_user.id] = {"action": "join_pick"}
+    await message.answer("Pick account:", reply_markup=_accounts_kb(message.from_user.id))
 
 
-@router.callback_query(F.data.startswith("join:"))
-async def cb_join_pick(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[5:]
-    _state[cq.from_user.id] = {"action": "join_target", "alias": alias}
-    await cq.message.edit_text(f"Account: {alias}\n\nEnter group/channel username or invite link:", reply_markup=_back_kb())
-
-
-# ---------------------------------------------------------------------------
-# Edit profile
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "edit")
-async def cb_edit(cq: CallbackQuery) -> None:
-    await cq.answer()
-    accounts = get_accounts(cq.from_user.id)
+@router.message(F.text == "Edit Profile")
+async def btn_edit(message: Message) -> None:
+    accounts = get_accounts(message.from_user.id)
     if not accounts:
-        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        await message.answer("No accounts.", reply_markup=_main_kb())
         return
-    await cq.message.edit_text("Pick account to edit:", reply_markup=_accounts_kb(cq.from_user.id, "editpick"))
+    _state[message.from_user.id] = {"action": "edit_pick"}
+    await message.answer("Pick account to edit:", reply_markup=_accounts_kb(message.from_user.id))
 
 
-@router.callback_query(F.data.startswith("editpick:"))
-async def cb_editpick(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[9:]
-    buttons = [
-        [InlineKeyboardButton(text="Edit Name", callback_data=f"ename:{alias}"),
-         InlineKeyboardButton(text="Edit Bio", callback_data=f"ebio:{alias}")],
-        [InlineKeyboardButton(text="Edit Username", callback_data=f"euser:{alias}")],
-        [InlineKeyboardButton(text="<< Menu", callback_data="menu")],
-    ]
-    await cq.message.edit_text(f"Editing [{alias}]:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-
-@router.callback_query(F.data.startswith("ename:"))
-async def cb_ename(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[6:]
-    _state[cq.from_user.id] = {"action": "edit_name", "alias": alias}
-    await cq.message.edit_text(f"[{alias}] Enter new name (first last):", reply_markup=_back_kb())
-
-
-@router.callback_query(F.data.startswith("ebio:"))
-async def cb_ebio(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[5:]
-    _state[cq.from_user.id] = {"action": "edit_bio", "alias": alias}
-    await cq.message.edit_text(f"[{alias}] Enter new bio:", reply_markup=_back_kb())
-
-
-@router.callback_query(F.data.startswith("euser:"))
-async def cb_euser(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[6:]
-    _state[cq.from_user.id] = {"action": "edit_username", "alias": alias}
-    await cq.message.edit_text(f"[{alias}] Enter new username (without @):", reply_markup=_back_kb())
-
-
-# ---------------------------------------------------------------------------
-# Remove / Logout
-# ---------------------------------------------------------------------------
-@router.callback_query(F.data == "cleanup")
-async def cb_cleanup(cq: CallbackQuery) -> None:
-    await cq.answer()
-    accounts = get_accounts(cq.from_user.id)
+@router.message(F.text == "Remove/Logout")
+async def btn_cleanup(message: Message) -> None:
+    accounts = get_accounts(message.from_user.id)
     if not accounts:
-        await cq.message.edit_text("No accounts.", reply_markup=_back_kb())
+        await message.answer("No accounts.", reply_markup=_main_kb())
         return
-    buttons = [[InlineKeyboardButton(
-        text=f"{a.alias} ({a.phone})", callback_data=f"cleanpick:{a.alias}"
-    )] for a in accounts]
-    buttons.append([InlineKeyboardButton(text="<< Menu", callback_data="menu")])
-    await cq.message.edit_text("Pick account:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-
-@router.callback_query(F.data.startswith("cleanpick:"))
-async def cb_cleanpick(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[10:]
-    buttons = [
-        [InlineKeyboardButton(text="Logout (revoke)", callback_data=f"logout:{alias}"),
-         InlineKeyboardButton(text="Remove only", callback_data=f"remove:{alias}")],
-        [InlineKeyboardButton(text="<< Menu", callback_data="menu")],
-    ]
-    await cq.message.edit_text(f"[{alias}] What to do?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-
-@router.callback_query(F.data.startswith("logout:"))
-async def cb_logout(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[7:]
-    acc = find_account(cq.from_user.id, alias)
-    if not acc:
-        await cq.message.edit_text("Not found.", reply_markup=_back_kb())
-        return
-    client = _client_from_session(acc.session_string, acc.device_preset)
-    try:
-        await client.connect()
-        await client.log_out()
-    except Exception:
-        pass
-    finally:
-        if client.is_connected():
-            await client.disconnect()
-    remove_account(cq.from_user.id, acc.phone)
-    await cq.message.edit_text(f"[{alias}] Logged out and removed.", reply_markup=_back_kb())
-
-
-@router.callback_query(F.data.startswith("remove:"))
-async def cb_remove(cq: CallbackQuery) -> None:
-    await cq.answer()
-    alias = cq.data[7:]
-    acc = remove_account(cq.from_user.id, alias)
-    if acc:
-        await cq.message.edit_text(f"[{alias}] Removed.", reply_markup=_back_kb())
-    else:
-        await cq.message.edit_text("Not found.", reply_markup=_back_kb())
-
+    _state[message.from_user.id] = {"action": "cleanup_pick"}
+    await message.answer("Pick account:", reply_markup=_accounts_kb(message.from_user.id))
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +477,96 @@ async def handle_text(message: Message) -> None:
         finally:
             if client.is_connected():
                 await client.disconnect()
+
+    # --- Broadcast pick ---
+    elif action == "broadcast_pick":
+        if text.startswith("bc:"):
+            list_name = text[3:]
+            _state[uid] = {"action": "broadcast_msg", "list": list_name}
+            await message.answer(f"List: {list_name}\n\nType the message to broadcast:", reply_markup=_back_kb())
+        else:
+            await message.answer("Pick a list from the buttons.", reply_markup=_back_kb())
+
+    # --- Delete list pick ---
+    elif action == "deletelist_pick":
+        if text.startswith("del:"):
+            name = text[4:]
+            remove_list(uid, name)
+            _state.pop(uid, None)
+            await message.answer(f"List '{name}' deleted.", reply_markup=_main_kb())
+        else:
+            await message.answer("Pick a list from the buttons.")
+
+    # --- Join pick account ---
+    elif action == "join_pick":
+        acc = find_account(uid, text)
+        if not acc:
+            await message.answer("Account not found. Pick from buttons.")
+            return
+        _state[uid] = {"action": "join_target", "alias": text}
+        await message.answer(f"Account: {text}\n\nEnter group/channel username or invite link:", reply_markup=_back_kb())
+
+    # --- Edit pick account ---
+    elif action == "edit_pick":
+        acc = find_account(uid, text)
+        if not acc:
+            await message.answer("Account not found. Pick from buttons.")
+            return
+        _state[uid] = {"action": "edit_choose", "alias": text}
+        buttons = [
+            [KeyboardButton(text="Edit Name"), KeyboardButton(text="Edit Bio")],
+            [KeyboardButton(text="Edit Username")],
+            [KeyboardButton(text="<< Menu")],
+        ]
+        await message.answer(f"Editing [{text}]:", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
+
+    elif action == "edit_choose":
+        alias = state["alias"]
+        if text == "Edit Name":
+            _state[uid] = {"action": "edit_name", "alias": alias}
+            await message.answer(f"[{alias}] Enter new name (first last):", reply_markup=_back_kb())
+        elif text == "Edit Bio":
+            _state[uid] = {"action": "edit_bio", "alias": alias}
+            await message.answer(f"[{alias}] Enter new bio:", reply_markup=_back_kb())
+        elif text == "Edit Username":
+            _state[uid] = {"action": "edit_username", "alias": alias}
+            await message.answer(f"[{alias}] Enter new username (without @):", reply_markup=_back_kb())
+
+    # --- Cleanup pick account ---
+    elif action == "cleanup_pick":
+        acc = find_account(uid, text)
+        if not acc:
+            await message.answer("Account not found. Pick from buttons.")
+            return
+        _state[uid] = {"action": "cleanup_choose", "alias": text}
+        buttons = [
+            [KeyboardButton(text="Logout (revoke)"), KeyboardButton(text="Remove only")],
+            [KeyboardButton(text="<< Menu")],
+        ]
+        await message.answer(f"[{text}] What to do?", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
+
+    elif action == "cleanup_choose":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Not found.", reply_markup=_main_kb())
+            return
+        if text == "Logout (revoke)":
+            client = _client_from_session(acc.session_string, acc.device_preset)
+            try:
+                await client.connect()
+                await client.log_out()
+            except Exception:
+                pass
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+            remove_account(uid, acc.phone)
+            await message.answer(f"[{alias}] Logged out and removed.", reply_markup=_main_kb())
+        elif text == "Remove only":
+            remove_account(uid, acc.phone)
+            await message.answer(f"[{alias}] Removed.", reply_markup=_main_kb())
 
 
 async def _finish_login(message: Message, admin_id: int) -> None:
