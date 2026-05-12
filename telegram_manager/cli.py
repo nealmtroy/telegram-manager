@@ -195,6 +195,7 @@ class InteractiveCLI:
             choices=[
                 Choice(title="Get profile (get_me)", value="me"),
                 Choice(title="List groups & channels", value="list_chats"),
+                Choice(title="BotFather", value="botfather"),
                 Choice(title="Edit name", value="edit_name"),
                 Choice(title="Edit bio", value="edit_bio"),
                 Choice(title="Edit username", value="edit_username"),
@@ -206,6 +207,8 @@ class InteractiveCLI:
             await self._show_me([acc])
         elif action == "list_chats":
             await self._list_chats(acc)
+        elif action == "botfather":
+            await self._botfather(acc)
         elif action == "edit_name":
             await self._edit_name(acc)
         elif action == "edit_bio":
@@ -360,6 +363,78 @@ class InteractiveCLI:
                 str(c["members"]) if c["members"] else "-",
             )
         console.print(table)
+
+
+    async def _botfather(self, acc: Account) -> None:
+        """Interactive BotFather session — send commands and see responses."""
+        import asyncio as _aio
+
+        COMMANDS = [
+            "/mybots",
+            "/newbot",
+            "/setname",
+            "/setdescription",
+            "/setabouttext",
+            "/setuserpic",
+            "/setcommands",
+            "/deletebot",
+            "/token",
+            "/revoke",
+            "/setinline",
+            "/setinlinegeo",
+            "/setinlinefeedback",
+            "/setjoingroups",
+            "/setprivacy",
+            "/myapps",
+            "/newapp",
+            "/listapps",
+            "/editapp",
+            "/deleteapp",
+            "/cancel",
+            "/help",
+        ]
+
+        cmd = await questionary.select(
+            "BotFather command:", choices=[
+                Choice(title=c, value=c) for c in COMMANDS
+            ] + [Choice(title="Custom command...", value="_custom"),
+                 Choice(title="Back", value=None)],
+        ).ask_async()
+        if cmd is None:
+            return
+        if cmd == "_custom":
+            cmd = await _ask_text("Enter command/message to send to BotFather:")
+
+        async def _action(client, _acc):
+            await client.send_message("@BotFather", cmd)
+            await _aio.sleep(1.5)  # wait for BotFather reply
+            msgs = await client.get_messages("@BotFather", limit=1)
+            if msgs and msgs[0].sender_id == 93372553:  # BotFather's user_id
+                return msgs[0].text
+            return "(no response yet)"
+
+        console.print(f"[dim]Sending to BotFather: {cmd}[/dim]")
+        response = await self.manager.run_on(acc.phone, _action)
+        console.print(Panel.fit(response or "(empty)", title="BotFather", border_style="cyan"))
+
+        # Continue conversation loop
+        while True:
+            follow = await _ask_text(
+                "Reply to BotFather (empty to stop):", default=""
+            )
+            if not follow:
+                break
+
+            async def _reply(client, _acc, msg=follow):
+                await client.send_message("@BotFather", msg)
+                await _aio.sleep(1.5)
+                msgs = await client.get_messages("@BotFather", limit=1)
+                if msgs and msgs[0].sender_id == 93372553:
+                    return msgs[0].text
+                return "(no response yet)"
+
+            response = await self.manager.run_on(acc.phone, _reply)
+            console.print(Panel.fit(response or "(empty)", title="BotFather", border_style="cyan"))
 
 
     async def _edit_name(self, acc: Account) -> None:
