@@ -109,6 +109,17 @@ def _new_client(preset_key: str = "random"):
     return client, preset
 
 
+def _log_chat_id():
+    """Get log destination from env. Can be user_id (int) or @username."""
+    raw = os.getenv("LOG_CHAT_ID", "")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw  # username like @mylogchannel
+
+
 def _main_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -599,7 +610,7 @@ async def handle_text(message: Message) -> None:
         from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
 
         bot = message.bot
-        chat_id = message.chat.id
+        log_dest = _log_chat_id() or message.chat.id
         round_num = 0
 
         while _state.get(uid, {}).get("action") == "broadcasting":
@@ -633,18 +644,18 @@ async def handle_text(message: Message) -> None:
                             else:
                                 await client.send_message(e, msg_text, parse_mode="html")
                         except (ChatWriteForbiddenError, UserBannedInChannelError):
-                            await bot.send_message(chat_id, f"[{acc.alias}] Blocked from {target}")
+                            await bot.send_message(log_dest, f"[{acc.alias}] Blocked from {target}")
                         except SlowModeWaitError as sme:
-                            await bot.send_message(chat_id, f"[{acc.alias}] {target}: slow mode {sme.seconds}s")
+                            await bot.send_message(log_dest, f"[{acc.alias}] {target}: slow mode {sme.seconds}s")
                         except FloodWaitError as fw:
-                            await bot.send_message(chat_id, f"[{acc.alias}] Flood wait {fw.seconds}s")
+                            await bot.send_message(log_dest, f"[{acc.alias}] Flood wait {fw.seconds}s")
                             await asyncio.sleep(fw.seconds)
                         except Exception:
                             pass
                         if delay_type == "per_group" and delay_max > 0:
                             await asyncio.sleep(random.uniform(delay_min, delay_max))
                 except Exception as ex:
-                    await bot.send_message(chat_id, f"[{acc.alias}] Error: {type(ex).__name__}")
+                    await bot.send_message(log_dest, f"[{acc.alias}] Error: {type(ex).__name__}")
                 finally:
                     if client.is_connected():
                         await client.disconnect()
@@ -655,7 +666,7 @@ async def handle_text(message: Message) -> None:
                 else:
                     await asyncio.sleep(1)
 
-        await bot.send_message(chat_id, "Broadcast stopped.", reply_markup=_main_kb())
+        await bot.send_message(message.chat.id, "Broadcast stopped.", reply_markup=_main_kb())
 
     elif action == "broadcasting":
         if text.lower() == "stop":
