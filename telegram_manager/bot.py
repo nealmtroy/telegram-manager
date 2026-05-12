@@ -448,17 +448,34 @@ async def handle_text(message: Message) -> None:
     elif action == "broadcast_watermark":
         wm = "" if text.lower() == "skip" else text
         _state[uid]["watermark"] = wm
-        _state[uid]["action"] = "broadcast_delay"
+        _state[uid]["action"] = "broadcast_delay_type"
+        buttons = [
+            [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
+            [KeyboardButton(text="<< Menu")],
+        ]
+        await message.answer(
+            "Delay mode:\n"
+            "• Per group — delay between each group\n"
+            "• Per round — delay after all groups done",
+            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+        )
+
+    elif action == "broadcast_delay_type":
+        if text not in ("Per group", "Per round"):
+            await message.answer("Pick 'Per group' or 'Per round'.")
+            return
+        _state[uid]["delay_type"] = text.lower().replace(" ", "_")
+        _state[uid]["action"] = "broadcast_delay_value"
         buttons = [
             [KeyboardButton(text="Auto (3-10s)"), KeyboardButton(text="No delay")],
             [KeyboardButton(text="<< Menu")],
         ]
         await message.answer(
-            "Delay between each message?\n\nPick or type custom (e.g. '5' or '3-8'):",
+            "Delay duration?\nPick or type custom (e.g. '5' or '3-8'):",
             reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
         )
 
-    elif action == "broadcast_delay":
+    elif action == "broadcast_delay_value":
         if text == "Auto (3-10s)":
             delay_min, delay_max = 3.0, 10.0
         elif text == "No delay":
@@ -481,22 +498,18 @@ async def handle_text(message: Message) -> None:
             _state.pop(uid, None)
             return
 
-        # Build final message with watermark
         final_text = st["text"]
         if st.get("watermark"):
             final_text += f"\n\n{st['watermark']}"
 
-        delay_str = f"{delay_min}-{delay_max}s" if delay_min != delay_max else f"{delay_min}s"
-        if delay_min == 0:
-            delay_str = "none"
-
+        delay_type = st["delay_type"]
         await message.answer(
-            f"Broadcasting (continuous loop)\n"
+            f"Broadcasting (continuous)\n"
             f"List: {st['list']} ({len(bl.targets)} targets)\n"
             f"Accounts: {len(accounts)}\n"
-            f"Delay: {delay_str}\n"
+            f"Delay: {delay_type.replace('_',' ')} | {delay_min}-{delay_max}s\n"
             f"Watermark: {st.get('watermark') or '(none)'}\n\n"
-            f"Sending... (send 'stop' to stop)",
+            f"Running... send 'stop' to stop",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="stop")]],
                 resize_keyboard=True,
@@ -505,17 +518,16 @@ async def handle_text(message: Message) -> None:
 
         _state[uid] = {"action": "broadcasting"}
 
-        # Start continuous broadcast
         from telethon.tl.functions.channels import JoinChannelRequest
         from telethon.tl.functions.messages import ImportChatInviteRequest
+        from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
 
-        round_num = 0
         bot = message.bot
         chat_id = message.chat.id
+        round_num = 0
 
         while _state.get(uid, {}).get("action") == "broadcasting":
             round_num += 1
-            await bot.send_message(chat_id, f"--- Round {round_num} ---")
             for acc in accounts:
                 if _state.get(uid, {}).get("action") != "broadcasting":
                     break
@@ -526,7 +538,6 @@ async def handle_text(message: Message) -> None:
                     for target in bl.targets:
                         if _state.get(uid, {}).get("action") != "broadcasting":
                             break
-                        # Auto-join
                         try:
                             if "t.me/+" in target or "joinchat/" in target:
                                 await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
@@ -534,34 +545,39 @@ async def handle_text(message: Message) -> None:
                                 await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
                         except Exception:
                             pass
-                        # Send
                         try:
                             e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
                             await client.send_message(e, final_text)
-                            await bot.send_message(chat_id, f"[{acc.alias}] -> {target}: sent")
-                        except Exception as ex:
-                            await bot.send_message(chat_id, f"[{acc.alias}] -> {target}: {type(ex).__name__}")
-                        # Delay
-                        if delay_max > 0:
+                        except (ChatWriteForbiddenError, UserBannedInChannelError):
+                            await bot.send_message(chat_id, f"[{acc.alias}] Blocked from {target}")
+                        except SlowModeWaitError as sme:
+                            await bot.send_message(chat_id, f"[{acc.alias}] {target}: slow mode {sme.seconds}s")
+                        except FloodWaitError as fw:
+                            await bot.send_message(chat_id, f"[{acc.alias}] Flood wait {fw.seconds}s")
+                            await asyncio.sleep(fw.seconds)
+                        except Exception:
+                            pass
+                        if delay_type == "per_group" and delay_max > 0:
                             await asyncio.sleep(random.uniform(delay_min, delay_max))
                 except Exception as ex:
-                    await bot.send_message(chat_id, f"[{acc.alias}] FAIL: {type(ex).__name__}")
+                    await bot.send_message(chat_id, f"[{acc.alias}] Error: {type(ex).__name__}")
                 finally:
                     if client.is_connected():
                         await client.disconnect()
 
             if _state.get(uid, {}).get("action") == "broadcasting":
-                await bot.send_message(chat_id, f"Round {round_num} done. Starting next round...")
-                await asyncio.sleep(2)
+                if delay_type == "per_round" and delay_max > 0:
+                    await asyncio.sleep(random.uniform(delay_min, delay_max))
+                else:
+                    await asyncio.sleep(1)
 
         await bot.send_message(chat_id, "Broadcast stopped.", reply_markup=_main_kb())
 
     elif action == "broadcasting":
         if text.lower() == "stop":
             _state.pop(uid, None)
-            # The loop checks state and will exit
         else:
-            await message.answer("Send 'stop' to stop broadcasting.")
+            await message.answer("Send 'stop' to stop.")
     elif action == "deletelist_pick":
         if text.startswith("del:"):
             name = text[4:]
