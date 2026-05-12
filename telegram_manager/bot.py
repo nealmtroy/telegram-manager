@@ -41,6 +41,7 @@ from .db import (
     register_admin,
     remove_account,
     remove_list,
+    transfer_all,
 )
 from .device_presets import get_preset
 from .logger import get_logger
@@ -127,6 +128,7 @@ def _main_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="Health Check"), KeyboardButton(text="Broadcast")],
             [KeyboardButton(text="Manage Lists"), KeyboardButton(text="Join Group")],
             [KeyboardButton(text="Edit Profile"), KeyboardButton(text="Remove/Logout")],
+            [KeyboardButton(text="Transfer Data")],
         ],
         resize_keyboard=True,
     )
@@ -157,8 +159,16 @@ async def cmd_start(message: Message) -> None:
         await message.answer("Access denied. Your account is managed by another admin.")
         return
     register_admin(uid, message.from_user.username or "", message.from_user.first_name or "")
-    n = len(get_accounts(uid))
-    await message.answer(f"Telegram Manager ({n} accounts)", reply_markup=_main_kb())
+    accounts = get_accounts(uid)
+    if not accounts:
+        _state[uid] = {"action": "login_phone"}
+        await message.answer(
+            "Welcome! You need to login an account first.\n\n"
+            "Enter phone number (e.g. +628123456789):",
+            reply_markup=_back_kb(),
+        )
+        return
+    await message.answer(f"Telegram Manager ({len(accounts)} accounts)", reply_markup=_main_kb())
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +295,21 @@ async def btn_cleanup(message: Message) -> None:
         return
     _state[message.from_user.id] = {"action": "cleanup_pick"}
     await message.answer("Pick account:", reply_markup=_accounts_kb(message.from_user.id))
+
+
+@router.message(F.text == "Transfer Data")
+async def btn_transfer(message: Message) -> None:
+    uid = message.from_user.id
+    accounts = get_accounts(uid)
+    if not accounts:
+        await message.answer("No accounts to transfer.", reply_markup=_main_kb())
+        return
+    _state[uid] = {"action": "transfer_target"}
+    await message.answer(
+        f"You have {len(accounts)} account(s) + lists.\n\n"
+        "Enter the Telegram user ID to transfer ALL your data to:",
+        reply_markup=_back_kb(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +777,24 @@ async def handle_text(message: Message) -> None:
         elif text == "Remove only":
             remove_account(uid, acc.phone)
             await message.answer(f"[{alias}] Removed.", reply_markup=_main_kb())
+
+    # --- Transfer ---
+    elif action == "transfer_target":
+        _state.pop(uid, None)
+        try:
+            target_id = int(text)
+        except ValueError:
+            await message.answer("Invalid ID. Enter a numeric Telegram user ID.", reply_markup=_main_kb())
+            return
+        if target_id == uid:
+            await message.answer("Can't transfer to yourself.", reply_markup=_main_kb())
+            return
+        count = transfer_all(uid, target_id)
+        await message.answer(
+            f"Transferred {count} item(s) to user {target_id}.\n"
+            f"Your data is now under their control.",
+            reply_markup=_main_kb(),
+        )
 
 
 async def _finish_login(message: Message, admin_id: int) -> None:

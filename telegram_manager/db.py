@@ -172,3 +172,15 @@ def add_list(bl: BroadcastListRow) -> None:
 def remove_list(admin_id: int, name: str) -> None:
     db = _get_client()
     db.table("broadcast_lists").delete().eq("admin_id", admin_id).eq("name", name).execute()
+
+
+
+def transfer_all(from_admin_id: int, to_admin_id: int) -> int:
+    """Transfer all accounts and lists from one admin to another. Returns count."""
+    db = _get_client()
+    # Transfer accounts
+    r = db.table("accounts").update({"admin_id": to_admin_id}).eq("admin_id", from_admin_id).execute()
+    acc_count = len(r.data)
+    # Transfer lists
+    r2 = db.table("broadcast_lists").update({"admin_id": to_admin_id}).eq("admin_id", from_admin_id).execute()
+    return acc_count + len(r2.data)
