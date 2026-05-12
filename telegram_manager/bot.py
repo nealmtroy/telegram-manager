@@ -442,12 +442,6 @@ async def handle_text(message: Message) -> None:
 
     elif action == "broadcast_msg":
         _state[uid]["text"] = text
-        _state[uid]["action"] = "broadcast_watermark"
-        await message.answer("Enter watermark (will be added below your message).\nSend 'skip' for no watermark:", reply_markup=_back_kb())
-
-    elif action == "broadcast_watermark":
-        wm = "" if text.lower() == "skip" else text
-        _state[uid]["watermark"] = wm
         _state[uid]["action"] = "broadcast_delay_type"
         buttons = [
             [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
@@ -499,8 +493,9 @@ async def handle_text(message: Message) -> None:
             return
 
         final_text = st["text"]
-        if st.get("watermark"):
-            final_text += f"\n\n{st['watermark']}"
+        watermark = os.getenv("WATERMARK", "")
+        if watermark:
+            final_text += f"\n\n{watermark}"
 
         delay_type = st["delay_type"]
         await message.answer(
@@ -508,7 +503,7 @@ async def handle_text(message: Message) -> None:
             f"List: {st['list']} ({len(bl.targets)} targets)\n"
             f"Accounts: {len(accounts)}\n"
             f"Delay: {delay_type.replace('_',' ')} | {delay_min}-{delay_max}s\n"
-            f"Watermark: {st.get('watermark') or '(none)'}\n\n"
+            f"Watermark: {watermark or '(none)'}\n\n"
             f"Running... send 'stop' to stop",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="stop")]],
