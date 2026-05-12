@@ -1,34 +1,14 @@
 """Device presets for Telegram sessions.
 
-These control what shows up in Telegram's "Active Sessions" panel:
+Each preset controls what shows up in Telegram's "Active Sessions" panel.
+All presets use the user's own api_id/api_hash from .env (set app title to
+"Telegram iOS" at https://my.telegram.org/apps for full effect).
 
-    📱 <device_model> · <app_name_from_api_id> <app_version>
-       <system_version> · <login date>
-
-Two sources of ``api_id`` / ``api_hash``:
-
-1. **default** preset -> api_id/api_hash read from ``.env`` (your own app
-   registered at https://my.telegram.org/apps). This is the ToS-compliant
-   path; app name on Telegram shows whatever title you registered.
-
-2. **official** presets (iphone_*, android_*, desktop_*, macos_*) -> use
-   publicly leaked credentials of real Telegram apps. Session appears as
-   "Telegram iOS / Android / Desktop / macOS" on the server side.
-
-⚠️ WARNING ABOUT OFFICIAL PRESETS:
-
-Using leaked official api_id/api_hash pairs violates Telegram's Terms of
-Service. Telegram can flag or ban accounts that use them, especially under
-abnormal usage patterns (rapid messaging, many accounts from one IP, bot-
-like behavior). Telegram also occasionally rotates these credentials - if
-``ApiIdInvalidError`` starts showing up, the leaked pair has been disabled
-and you need to either wait for the community to share a new one or switch
-to the ``default`` preset.
-
-Use at your own risk.
+The ``random`` preset picks a random device from the pool on each login.
 """
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -44,164 +24,166 @@ class DevicePreset:
     app_version: str
     lang_code: str = "en"
     system_lang_code: str = "en"
-    # Optional: if provided, overrides user's own api_id/api_hash.
-    # Presence of these makes the session appear as the official app.
-    api_id: Optional[int] = None
-    api_hash: Optional[str] = None
-    # Optional lang pack tag (e.g. "android", "ios", "tdesktop"). Telethon's
-    # public constructor doesn't forward it, so we keep it for docs only.
-    lang_pack: Optional[str] = None
 
     @property
     def uses_official_api(self) -> bool:
-        """True when this preset bundles leaked official credentials."""
-        return self.api_id is not None and bool(self.api_hash)
+        """Always False now — all presets use user's own api_id."""
+        return False
 
     def summary(self) -> str:
         return f"{self.device_model} · {self.system_version} · v{self.app_version}"
 
 
 # ---------------------------------------------------------------------------
-# Built-in catalog
+# Device pool for randomization
 # ---------------------------------------------------------------------------
-# NOTE: The api_id / api_hash values below are widely-circulated *leaked*
-# pairs from official Telegram clients. They are included because the user
-# explicitly asked for this behavior. They are NOT secret - they've been
-# published on GitHub/gists/blogs for years - but using them still violates
-# Telegram's ToS. See the module docstring above.
+_DEVICE_POOL: List[dict] = [
+    # iPhone models
+    {"device_model": "iPhone 17 Pro Max", "system_version": "iOS 19.0", "app_version": "11.15.0"},
+    {"device_model": "iPhone 17 Pro", "system_version": "iOS 19.0", "app_version": "11.15.0"},
+    {"device_model": "iPhone 17", "system_version": "iOS 19.0", "app_version": "11.14.2"},
+    {"device_model": "iPhone 16 Pro Max", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 16 Pro", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 16", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 15 Pro Max", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 15 Pro", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 15", "system_version": "iOS 18.4", "app_version": "11.11.0"},
+    {"device_model": "iPhone 14 Pro Max", "system_version": "iOS 18.5", "app_version": "11.12.1"},
+    {"device_model": "iPhone 14 Pro", "system_version": "iOS 18.4", "app_version": "11.11.0"},
+    {"device_model": "iPhone 14", "system_version": "iOS 18.3", "app_version": "11.10.2"},
+    # Samsung models
+    {"device_model": "SM-S928B", "system_version": "Android 15 (SDK 35)", "app_version": "11.8.0 (5100)"},
+    {"device_model": "SM-S926B", "system_version": "Android 15 (SDK 35)", "app_version": "11.8.0 (5100)"},
+    {"device_model": "SM-S921B", "system_version": "Android 14 (SDK 34)", "app_version": "11.6.2 (5050)"},
+    {"device_model": "SM-S918B", "system_version": "Android 14 (SDK 34)", "app_version": "11.5.0 (5020)"},
+    # Pixel models
+    {"device_model": "Pixel 9 Pro", "system_version": "Android 15 (SDK 35)", "app_version": "11.8.0 (5100)"},
+    {"device_model": "Pixel 8 Pro", "system_version": "Android 15 (SDK 35)", "app_version": "11.7.1 (5080)"},
+    {"device_model": "Pixel 8", "system_version": "Android 14 (SDK 34)", "app_version": "11.6.2 (5050)"},
+]
+
+
+def _random_device() -> dict:
+    """Pick a random device from the pool."""
+    return random.choice(_DEVICE_POOL)
+
+
+# ---------------------------------------------------------------------------
+# Preset catalog — all use user's own api_id from .env
+# ---------------------------------------------------------------------------
 DEVICE_PRESETS: Dict[str, DevicePreset] = {
-    # ---- Your own API (ToS-compliant escape hatch) -------------------------
-    "default": DevicePreset(
-        key="default",
-        display_name="Your own api_id (from .env)  [SAFE]",
+    "random": DevicePreset(
+        key="random",
+        display_name="🎲 Random device (changes each login)",
+        device_model="(random)",
+        system_version="(random)",
+        app_version="(random)",
+    ),
+    "iphone_17_pro_max": DevicePreset(
+        key="iphone_17_pro_max",
+        display_name="iPhone 17 Pro Max · iOS 19.0",
+        device_model="iPhone 17 Pro Max",
+        system_version="iOS 19.0",
+        app_version="11.15.0",
+    ),
+    "iphone_17_pro": DevicePreset(
+        key="iphone_17_pro",
+        display_name="iPhone 17 Pro · iOS 19.0",
+        device_model="iPhone 17 Pro",
+        system_version="iOS 19.0",
+        app_version="11.15.0",
+    ),
+    "iphone_16_pro_max": DevicePreset(
+        key="iphone_16_pro_max",
+        display_name="iPhone 16 Pro Max · iOS 18.5",
+        device_model="iPhone 16 Pro Max",
+        system_version="iOS 18.5",
+        app_version="11.12.1",
+    ),
+    "iphone_16_pro": DevicePreset(
+        key="iphone_16_pro",
+        display_name="iPhone 16 Pro · iOS 18.5",
+        device_model="iPhone 16 Pro",
+        system_version="iOS 18.5",
+        app_version="11.12.1",
+    ),
+    "iphone_15_pro_max": DevicePreset(
+        key="iphone_15_pro_max",
+        display_name="iPhone 15 Pro Max · iOS 18.5",
         device_model="iPhone 15 Pro Max",
         system_version="iOS 18.5",
         app_version="11.12.1",
     ),
-
-    # ---- iOS (Telegram iOS official) --------------------------------------
     "iphone_15_pro": DevicePreset(
         key="iphone_15_pro",
-        display_name="iPhone 15 Pro Max · Telegram iOS  [OFFICIAL API]",
-        device_model="iPhone 15 Pro Max",
+        display_name="iPhone 15 Pro · iOS 18.5",
+        device_model="iPhone 15 Pro",
         system_version="iOS 18.5",
         app_version="11.12.1",
-        api_id=8,
-        api_hash="7245de8e747a0d6fbe11f7cc14fcc0bb",
-        lang_pack="ios",
     ),
-    "iphone_14": DevicePreset(
-        key="iphone_14",
-        display_name="iPhone 14 · Telegram iOS  [OFFICIAL API]",
-        device_model="iPhone 14",
-        system_version="iOS 18.5",
-        app_version="11.12.1",
-        api_id=8,
-        api_hash="7245de8e747a0d6fbe11f7cc14fcc0bb",
-        lang_pack="ios",
+    "samsung_s25_ultra": DevicePreset(
+        key="samsung_s25_ultra",
+        display_name="Samsung Galaxy S25 Ultra · Android 15",
+        device_model="SM-S928B",
+        system_version="Android 15 (SDK 35)",
+        app_version="11.8.0 (5100)",
     ),
-    "iphone_se": DevicePreset(
-        key="iphone_se",
-        display_name="iPhone SE (3rd gen) · Telegram iOS  [OFFICIAL API]",
-        device_model="iPhone SE",
-        system_version="iOS 18.5",
-        app_version="11.12.1",
-        api_id=8,
-        api_hash="7245de8e747a0d6fbe11f7cc14fcc0bb",
-        lang_pack="ios",
-    ),
-
-    # ---- Android (Telegram for Android official) --------------------------
-    "samsung_s24": DevicePreset(
-        key="samsung_s24",
-        display_name="Samsung Galaxy S24 · Telegram Android  [OFFICIAL API]",
+    "samsung_s24_ultra": DevicePreset(
+        key="samsung_s24_ultra",
+        display_name="Samsung Galaxy S24 Ultra · Android 14",
         device_model="SM-S921B",
         system_version="Android 14 (SDK 34)",
-        app_version="10.12.1 (4842)",
-        api_id=6,
-        api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
-        lang_pack="android",
+        app_version="11.6.2 (5050)",
     ),
-    "samsung_s22": DevicePreset(
-        key="samsung_s22",
-        display_name="Samsung Galaxy S22 · Telegram Android  [OFFICIAL API]",
-        device_model="SM-S901B",
-        system_version="Android 13 (SDK 33)",
-        app_version="10.9.1 (4770)",
-        api_id=6,
-        api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
-        lang_pack="android",
+    "pixel_9_pro": DevicePreset(
+        key="pixel_9_pro",
+        display_name="Google Pixel 9 Pro · Android 15",
+        device_model="Pixel 9 Pro",
+        system_version="Android 15 (SDK 35)",
+        app_version="11.8.0 (5100)",
     ),
-    "pixel_8": DevicePreset(
-        key="pixel_8",
-        display_name="Google Pixel 8 · Telegram Android  [OFFICIAL API]",
-        device_model="Pixel 8",
-        system_version="Android 14 (SDK 34)",
-        app_version="10.12.1 (4842)",
-        api_id=6,
-        api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
-        lang_pack="android",
-    ),
-    "xiaomi_13": DevicePreset(
-        key="xiaomi_13",
-        display_name="Xiaomi 13 · Telegram Android  [OFFICIAL API]",
-        device_model="2211133G",
-        system_version="Android 13 (SDK 33)",
-        app_version="10.10.0 (4793)",
-        api_id=6,
-        api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
-        lang_pack="android",
-    ),
-
-    # ---- Desktop (Telegram Desktop / tdesktop official) --------------------
     "desktop_windows": DevicePreset(
         key="desktop_windows",
-        display_name="Desktop · Windows · Telegram Desktop  [OFFICIAL API]",
+        display_name="Desktop · Windows 11",
         device_model="PC 64bit",
         system_version="Windows 11",
-        app_version="5.3.0 x64",
-        api_id=2040,
-        api_hash="b18441a1ff607e10a989891a5462e627",
-        lang_pack="tdesktop",
+        app_version="5.8.0 x64",
     ),
-    "desktop_linux": DevicePreset(
-        key="desktop_linux",
-        display_name="Desktop · Linux · Telegram Desktop  [OFFICIAL API]",
-        device_model="PC 64bit",
-        system_version="Linux 6.6 (Ubuntu 24.04)",
-        app_version="5.3.0",
-        api_id=2040,
-        api_hash="b18441a1ff607e10a989891a5462e627",
-        lang_pack="tdesktop",
-    ),
-
-    # ---- macOS (Telegram macOS Swift official) ----------------------------
     "desktop_macos": DevicePreset(
         key="desktop_macos",
-        display_name="MacBook Pro · Telegram macOS  [OFFICIAL API]",
+        display_name="MacBook Pro · macOS 15",
         device_model="MacBook Pro",
-        system_version="macOS 14.5",
-        app_version="10.13 (5200)",
-        api_id=2834,
-        api_hash="68875f756c9b437a8b916ca3de215815",
-        lang_pack="macos",
+        system_version="macOS 15.1",
+        app_version="11.14 (5300)",
     ),
 }
 
-DEFAULT_PRESET_KEY = "default"
+DEFAULT_PRESET_KEY = "random"
 
 
 def get_preset(key: Optional[str]) -> DevicePreset:
-    """Look up a preset by key, falling back to the default."""
+    """Look up a preset by key. If 'random', resolve to a concrete device."""
+    if not key or key == "random":
+        d = _random_device()
+        return DevicePreset(
+            key="random",
+            display_name=f"Random: {d['device_model']}",
+            device_model=d["device_model"],
+            system_version=d["system_version"],
+            app_version=d["app_version"],
+        )
+    return DEVICE_PRESETS.get(key, DEVICE_PRESETS["random"])
+
+
+def get_preset_static(key: Optional[str]) -> DevicePreset:
+    """Look up without resolving random — for display purposes only."""
     if not key:
         return DEVICE_PRESETS[DEFAULT_PRESET_KEY]
     return DEVICE_PRESETS.get(key, DEVICE_PRESETS[DEFAULT_PRESET_KEY])
 
 
 def list_presets() -> List[DevicePreset]:
-    """Return all presets, default first, then grouped iOS / Android / Desktop."""
-    ordered = [DEVICE_PRESETS[DEFAULT_PRESET_KEY]]
-    ordered.extend(
-        p for k, p in DEVICE_PRESETS.items() if k != DEFAULT_PRESET_KEY
-    )
+    """Return all presets, random first."""
+    ordered = [DEVICE_PRESETS["random"]]
+    ordered.extend(p for k, p in DEVICE_PRESETS.items() if k != "random")
     return ordered

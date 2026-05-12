@@ -243,30 +243,19 @@ class TelegramManager:
 
     # -- internals --------------------------------------------------------
     def _build_client(self, account: Account) -> TelegramClient:
-        """Build a client whose params match the account's device preset.
-
-        Uses preset api_id/api_hash when the preset carries them (official
-        leaked pairs), else falls back to user's .env credentials.
-        """
+        """Build a client whose params match the account's device preset."""
         preset = get_preset(account.device_preset)
         session_path = str(self.store.session_path(account.session_name))
         proxy = self.config.proxy.to_telethon()
-        if preset.uses_official_api:
-            api_id = preset.api_id
-            api_hash = preset.api_hash
-        else:
-            if not self.config.has_own_api:
-                raise TelegramManagerError(
-                    f"[{account.alias}] is configured with 'default' preset "
-                    "but TELEGRAM_API_ID/TELEGRAM_API_HASH aren't set in .env. "
-                    "Either fill them in or relogin with an official preset."
-                )
-            api_id = self.config.api_id
-            api_hash = self.config.api_hash
+        if not self.config.has_own_api:
+            raise TelegramManagerError(
+                f"[{account.alias}] TELEGRAM_API_ID/TELEGRAM_API_HASH "
+                "aren't set in .env."
+            )
         return TelegramClient(
             session_path,
-            api_id,
-            api_hash,
+            self.config.api_id,
+            self.config.api_hash,
             proxy=proxy,
             device_model=preset.device_model,
             system_version=preset.system_version,

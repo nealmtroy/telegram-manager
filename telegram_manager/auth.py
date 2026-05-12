@@ -306,31 +306,17 @@ class AuthFlow:
     def _build_client(
         self, session_path: str, preset: DevicePreset
     ) -> TelegramClient:
-        """Construct a Telethon client shaped by ``preset``.
-
-        - If the preset carries its own api_id/api_hash (official leaked pair),
-          those are used and the session will appear as the official Telegram
-          app on Telegram's servers.
-        - Otherwise we fall back to the user's own api_id/api_hash from .env.
-        """
+        """Construct a Telethon client shaped by ``preset``."""
         proxy = self.config.proxy.to_telethon()
-        if preset.uses_official_api:
-            api_id = preset.api_id
-            api_hash = preset.api_hash
-        else:
-            if not self.config.has_own_api:
-                raise ConfigError(
-                    "The 'default' device preset needs TELEGRAM_API_ID and "
-                    "TELEGRAM_API_HASH in .env. Either fill them in "
-                    "(see https://my.telegram.org/apps) or pick an official "
-                    "device preset (iphone_*, samsung_*, desktop_*, ...)."
-                )
-            api_id = self.config.api_id
-            api_hash = self.config.api_hash
+        if not self.config.has_own_api:
+            raise ConfigError(
+                "TELEGRAM_API_ID and TELEGRAM_API_HASH are required in .env. "
+                "Get them at https://my.telegram.org/apps."
+            )
         return TelegramClient(
             session_path,
-            api_id,
-            api_hash,
+            self.config.api_id,
+            self.config.api_hash,
             proxy=proxy,
             device_model=preset.device_model,
             system_version=preset.system_version,

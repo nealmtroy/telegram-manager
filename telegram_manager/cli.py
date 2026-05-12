@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .device_presets import DEFAULT_PRESET_KEY, DevicePreset, get_preset, list_presets
+from .device_presets import DEFAULT_PRESET_KEY, DevicePreset, get_preset, get_preset_static, list_presets
 from .exceptions import (
     AccountNotFoundError,
     RecaptchaRequiredError,
@@ -110,7 +110,7 @@ class InteractiveCLI:
             validate=lambda s: bool(s and s.strip()),
         )
         preset = await self._pick_preset(
-            "Pick a device to impersonate:", default_key="desktop_windows"
+            "Pick a device to impersonate:", default_key="random"
         )
         if preset is None:
             return
@@ -146,17 +146,12 @@ class InteractiveCLI:
             device_preset=preset.key,
         )
         badge = "[yellow]2FA[/yellow]" if account.is_2fa else "[green]no-2FA[/green]"
-        preset_badge = (
-            "[red]OFFICIAL API[/red]"
-            if preset.uses_official_api
-            else "[green]your own api[/green]"
-        )
         console.print(
             Panel.fit(
                 f"Logged in as [bold]{account.display_name}[/bold] "
                 f"(@{account.username or '-'}, id={account.user_id})\n"
                 f"Alias: [cyan]{account.alias}[/cyan]   {badge}\n"
-                f"Device: [cyan]{preset.display_name}[/cyan]  {preset_badge}",
+                f"Device: [cyan]{preset.device_model}[/cyan] · {preset.system_version}",
                 title="✅  Success",
                 border_style="green",
             )
@@ -347,9 +342,9 @@ class InteractiveCLI:
         return self.manager.get_account(picked)
 
     async def _pick_preset(
-        self, prompt: str, *, default_key: str = "desktop_windows"
+        self, prompt: str, *, default_key: str = "random"
     ) -> Optional[DevicePreset]:
-        """Pick a device preset; shows ToS warning for official-api presets."""
+        """Pick a device preset."""
         presets = list_presets()
         choices: List[Choice] = []
         for p in presets:
@@ -362,50 +357,21 @@ class InteractiveCLI:
         ).ask_async()
         if picked_key is None:
             return None
-        preset = get_preset(picked_key)
 
-        if preset.uses_official_api:
+        if not self.manager.config.has_own_api:
             console.print(
                 Panel.fit(
-                    "[bold red]⚠ OFFICIAL API WARNING[/bold red]\n\n"
-                    "This preset uses a [bold]leaked official[/bold] Telegram "
-                    "api_id/api_hash pair so the session will appear as the "
-                    "real Telegram app on Telegram's side.\n\n"
-                    "[yellow]Consequences:[/yellow]\n"
-                    "• This violates Telegram's Terms of Service.\n"
-                    "• Your account may be flagged, restricted, or banned — "
-                    "especially with bot-like traffic (rapid messaging, many\n"
-                    "  accounts from one IP, broadcasts).\n"
-                    "• Telegram occasionally rotates these credentials; if "
-                    "logins start failing with [bold]ApiIdInvalid[/bold] the\n"
-                    "  pair has been killed.\n\n"
-                    "[dim]You can switch back to the 'default' preset anytime "
-                    "via Re-login.[/dim]",
-                    title="Using an OFFICIAL API preset",
-                    border_style="red",
+                    "[yellow]TELEGRAM_API_ID / TELEGRAM_API_HASH required in "
+                    ".env (from https://my.telegram.org/apps).[/yellow]",
+                    title="Missing credentials",
+                    border_style="yellow",
                 )
             )
-            confirm = await questionary.confirm(
-                "I understand the risk, continue?", default=False
-            ).ask_async()
-            if not confirm:
-                console.print("[dim]Preset selection cancelled.[/dim]")
-                return None
-        elif preset.key == DEFAULT_PRESET_KEY:
-            if not self.manager.config.has_own_api:
-                console.print(
-                    Panel.fit(
-                        "[yellow]The 'default' preset needs your own "
-                        "TELEGRAM_API_ID / TELEGRAM_API_HASH in .env "
-                        "(from https://my.telegram.org/apps). "
-                        "These aren't set yet.[/yellow]",
-                        title="Missing credentials",
-                        border_style="yellow",
-                    )
-                )
-                return None
-        return preset
+            return None
 
+        # Resolve (random picks a concrete device here)
+        preset = get_preset(picked_key)
+        return preset
 
     async def _pick_accounts(self, prompt: str) -> List[Account]:
         accounts = self.manager.list_accounts()
@@ -498,13 +464,9 @@ def _render_accounts_table(accounts: List[Account]) -> None:
     table.add_column("Username")
     table.add_column("2FA", justify="center")
     table.add_column("Device", overflow="fold")
-    table.add_column("API", justify="center")
     table.add_column("Last login")
     for i, a in enumerate(accounts, 1):
-        preset = get_preset(a.device_preset)
-        api_cell = (
-            "[red]OFFICIAL[/red]" if preset.uses_official_api else "[green]own[/green]"
-        )
+        preset = get_preset_static(a.device_preset)
         table.add_row(
             str(i),
             a.alias,
@@ -512,8 +474,7 @@ def _render_accounts_table(accounts: List[Account]) -> None:
             a.display_name,
             f"@{a.username}" if a.username else "-",
             "✓" if a.is_2fa else "-",
-            preset.display_name.split("  [")[0],  # strip the trailing tag
-            api_cell,
+            preset.display_name,
             (a.last_login_at or "-").split(".")[0].replace("T", " "),
         )
     console.print(table)
