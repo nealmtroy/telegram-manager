@@ -683,7 +683,7 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
                 row = []
         if row:
             buttons.append(row)
-        await message.answer("🌐", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await message.answer("Pilih bahasa yang kamu inginkan:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 @router.message(F.text)
