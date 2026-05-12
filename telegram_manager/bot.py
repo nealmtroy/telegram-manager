@@ -740,6 +740,11 @@ async def handle_text(message: Message) -> None:
     elif action == "login_code":
         client = state["client"]
         code = text.replace(" ", "")
+        # Delete the message containing the code
+        try:
+            await message.delete()
+        except Exception:
+            pass
         try:
             await client.sign_in(state["phone"], code, phone_code_hash=state["phone_code_hash"])
         except PhoneCodeInvalidError:
@@ -758,6 +763,11 @@ async def handle_text(message: Message) -> None:
 
     elif action == "login_2fa":
         client = state["client"]
+        # Delete the message containing the password
+        try:
+            await message.delete()
+        except Exception:
+            pass
         try:
             await client.sign_in(password=text)
         except Exception as e:
@@ -1201,7 +1211,8 @@ async def _finish_login(message: Message, admin_id: int) -> None:
     client = state["client"]
     me = await client.get_me()
 
-    if is_registered_admin(me.id):
+    # Anti-double: block only if managed by ANOTHER admin
+    if is_registered_admin(me.id) and me.id != admin_id:
         await client.disconnect()
         await message.answer("Cannot add — this user is already an admin.", reply_markup=_back_kb())
         return
