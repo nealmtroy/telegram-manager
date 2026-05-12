@@ -322,53 +322,6 @@ async def handle_text(message: Message) -> None:
         state["is_2fa"] = True
         await _finish_login(message, uid)
 
-    # --- Broadcast message ---
-    elif action == "broadcast_msg":
-        list_name = state["list"]
-        _state.pop(uid, None)
-        bl = get_list(uid, list_name)
-        if not bl:
-            await message.answer("List not found.", reply_markup=_back_kb())
-            return
-        accounts = get_accounts(uid)
-        if not accounts:
-            await message.answer("No accounts.", reply_markup=_back_kb())
-            return
-        await message.answer(f"Broadcasting to {len(bl.targets)} targets from {len(accounts)} accounts...")
-
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
-
-        results = []
-        for acc in accounts:
-            client = _client_from_session(acc.session_string, acc.device_preset)
-            try:
-                await client.connect()
-                await client.get_me()
-                res = []
-                for target in bl.targets:
-                    try:
-                        if "t.me/+" in target or "joinchat/" in target:
-                            await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
-                        else:
-                            await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
-                    except Exception:
-                        pass
-                    try:
-                        e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
-                        await client.send_message(e, text)
-                        res.append("ok")
-                    except Exception as ex:
-                        res.append(type(ex).__name__)
-                    await asyncio.sleep(random.uniform(3, 8))
-                results.append(f"[{acc.alias}] {'/'.join(res)}")
-            except Exception as ex:
-                results.append(f"[{acc.alias}] FAIL: {type(ex).__name__}")
-            finally:
-                if client.is_connected():
-                    await client.disconnect()
-        await message.answer("\n".join(results), reply_markup=_back_kb())
-
     # --- Create list ---
     elif action == "createlist_name":
         _state[uid] = {"action": "createlist_targets", "name": text, "targets": []}
@@ -485,9 +438,130 @@ async def handle_text(message: Message) -> None:
             _state[uid] = {"action": "broadcast_msg", "list": list_name}
             await message.answer(f"List: {list_name}\n\nType the message to broadcast:", reply_markup=_back_kb())
         else:
-            await message.answer("Pick a list from the buttons.", reply_markup=_back_kb())
+            await message.answer("Pick a list from the buttons.")
 
-    # --- Delete list pick ---
+    elif action == "broadcast_msg":
+        _state[uid]["text"] = text
+        _state[uid]["action"] = "broadcast_watermark"
+        await message.answer("Enter watermark (will be added below your message).\nSend 'skip' for no watermark:", reply_markup=_back_kb())
+
+    elif action == "broadcast_watermark":
+        wm = "" if text.lower() == "skip" else text
+        _state[uid]["watermark"] = wm
+        _state[uid]["action"] = "broadcast_delay"
+        buttons = [
+            [KeyboardButton(text="Auto (3-10s)"), KeyboardButton(text="No delay")],
+            [KeyboardButton(text="<< Menu")],
+        ]
+        await message.answer(
+            "Delay between each message?\n\nPick or type custom (e.g. '5' or '3-8'):",
+            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
+        )
+
+    elif action == "broadcast_delay":
+        if text == "Auto (3-10s)":
+            delay_min, delay_max = 3.0, 10.0
+        elif text == "No delay":
+            delay_min, delay_max = 0.0, 0.0
+        elif "-" in text:
+            parts = text.split("-")
+            delay_min, delay_max = float(parts[0]), float(parts[1])
+        else:
+            try:
+                delay_min = delay_max = float(text)
+            except ValueError:
+                await message.answer("Invalid. Enter number or range (e.g. 3-8):")
+                return
+
+        st = _state[uid]
+        bl = get_list(uid, st["list"])
+        accounts = get_accounts(uid)
+        if not bl or not accounts:
+            await message.answer("List or accounts not found.", reply_markup=_main_kb())
+            _state.pop(uid, None)
+            return
+
+        # Build final message with watermark
+        final_text = st["text"]
+        if st.get("watermark"):
+            final_text += f"\n\n{st['watermark']}"
+
+        delay_str = f"{delay_min}-{delay_max}s" if delay_min != delay_max else f"{delay_min}s"
+        if delay_min == 0:
+            delay_str = "none"
+
+        await message.answer(
+            f"Broadcasting (continuous loop)\n"
+            f"List: {st['list']} ({len(bl.targets)} targets)\n"
+            f"Accounts: {len(accounts)}\n"
+            f"Delay: {delay_str}\n"
+            f"Watermark: {st.get('watermark') or '(none)'}\n\n"
+            f"Sending... (send 'stop' to stop)",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="stop")]],
+                resize_keyboard=True,
+            ),
+        )
+
+        _state[uid] = {"action": "broadcasting"}
+
+        # Start continuous broadcast
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        round_num = 0
+        bot = message.bot
+        chat_id = message.chat.id
+
+        while _state.get(uid, {}).get("action") == "broadcasting":
+            round_num += 1
+            await bot.send_message(chat_id, f"--- Round {round_num} ---")
+            for acc in accounts:
+                if _state.get(uid, {}).get("action") != "broadcasting":
+                    break
+                client = _client_from_session(acc.session_string, acc.device_preset)
+                try:
+                    await client.connect()
+                    await client.get_me()
+                    for target in bl.targets:
+                        if _state.get(uid, {}).get("action") != "broadcasting":
+                            break
+                        # Auto-join
+                        try:
+                            if "t.me/+" in target or "joinchat/" in target:
+                                await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
+                            else:
+                                await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
+                        except Exception:
+                            pass
+                        # Send
+                        try:
+                            e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
+                            await client.send_message(e, final_text)
+                            await bot.send_message(chat_id, f"[{acc.alias}] -> {target}: sent")
+                        except Exception as ex:
+                            await bot.send_message(chat_id, f"[{acc.alias}] -> {target}: {type(ex).__name__}")
+                        # Delay
+                        if delay_max > 0:
+                            await asyncio.sleep(random.uniform(delay_min, delay_max))
+                except Exception as ex:
+                    await bot.send_message(chat_id, f"[{acc.alias}] FAIL: {type(ex).__name__}")
+                finally:
+                    if client.is_connected():
+                        await client.disconnect()
+
+            if _state.get(uid, {}).get("action") == "broadcasting":
+                await bot.send_message(chat_id, f"Round {round_num} done. Starting next round...")
+                await asyncio.sleep(2)
+
+        await bot.send_message(chat_id, "Broadcast stopped.", reply_markup=_main_kb())
+
+    elif action == "broadcasting":
+        if text.lower() == "stop":
+            _state.pop(uid, None)
+            # The loop checks state and will exit
+        else:
+            await message.answer("Send 'stop' to stop broadcasting.")
     elif action == "deletelist_pick":
         if text.startswith("del:"):
             name = text[4:]
