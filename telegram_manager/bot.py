@@ -792,6 +792,8 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         for acc in accounts:
             if _state.get(uid, {}).get("action") != "broadcasting":
                 break
+            acc_success = []
+            acc_failed = []
             client = _client_from_session(acc.session_string, acc.device_preset)
             try:
                 await client.connect()
@@ -812,16 +814,26 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                             await client.send_file(e, media_bytes, caption=msg_text, parse_mode="html", file_name=media_filename)
                         else:
                             await client.send_message(e, msg_text, parse_mode="html")
-                        round_success.append(f"{acc.alias} -> {target}")
+                        success_line = f"{acc.alias} -> {target}"
+                        round_success.append(success_line)
+                        acc_success.append(success_line)
                     except (ChatWriteForbiddenError, UserBannedInChannelError):
-                        round_failed.append(f"{acc.alias} -> {target}: Blocked")
+                        failed_line = f"{acc.alias} -> {target}: Blocked"
+                        round_failed.append(failed_line)
+                        acc_failed.append(failed_line)
                     except SlowModeWaitError as sme:
-                        round_failed.append(f"{acc.alias} -> {target}: SlowMode {sme.seconds}s")
+                        failed_line = f"{acc.alias} -> {target}: SlowMode {sme.seconds}s"
+                        round_failed.append(failed_line)
+                        acc_failed.append(failed_line)
                     except FloodWaitError as fw:
-                        round_failed.append(f"{acc.alias} -> {target}: Flood {fw.seconds}s")
+                        failed_line = f"{acc.alias} -> {target}: Flood {fw.seconds}s"
+                        round_failed.append(failed_line)
+                        acc_failed.append(failed_line)
                         await asyncio.sleep(fw.seconds)
                     except Exception as ex:
-                        round_failed.append(f"{acc.alias} -> {target}: {type(ex).__name__}")
+                        failed_line = f"{acc.alias} -> {target}: {type(ex).__name__}"
+                        round_failed.append(failed_line)
+                        acc_failed.append(failed_line)
                     target_attempt += 1
                     if (
                         _state.get(uid, {}).get("action") == "broadcasting"
@@ -830,9 +842,26 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                     ):
                         await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
             except Exception as ex:
-                round_failed.append(f"{acc.alias}: {type(ex).__name__}")
+                failed_line = f"{acc.alias}: {type(ex).__name__}"
+                round_failed.append(failed_line)
+                acc_failed.append(failed_line)
             finally:
                 if client.is_connected():
+                    if log_dest and _state.get(uid, {}).get("action") == "broadcasting":
+                        now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                        log_lines = [
+                            f"Round {round_num} | {now}",
+                            f"Account: {acc.alias}",
+                            f"Sent: {len(acc_success)}",
+                        ]
+                        if acc_success:
+                            log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
+                        if acc_failed:
+                            log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
+                        try:
+                            await client.send_message(log_dest, "\n".join(log_lines))
+                        except Exception:
+                            pass
                     await client.disconnect()
 
         # Log summary per round
@@ -850,18 +879,6 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                 await bot.send_message(uid, log_text)
             except Exception:
                 pass
-            # Also send to LOG_CHAT_ID via Telethon if configured
-            if log_dest:
-                log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
-                try:
-                    await log_client.connect()
-                    await log_client.send_message(log_dest, log_text)
-                except Exception:
-                    pass
-                finally:
-                    if log_client.is_connected():
-                        await log_client.disconnect()
-
             if round_delay_max > 0:
                 await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
             else:
