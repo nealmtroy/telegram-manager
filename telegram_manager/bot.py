@@ -349,6 +349,7 @@ def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
             [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
             [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
+            [KeyboardButton(text=labels[8])],
         ],
         resize_keyboard=True,
     )
@@ -358,62 +359,72 @@ _MENU_LABELS = {
     "id": [
         "➕ Tambah Akun", "👤 Akun Saya",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Kelola List", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "💬 Kelola Text", "👥 Manage Group",
+        "🗑 Hapus/Logout", "🔄 Transfer",
+        "🌐 Bahasa",
     ],
     "en": [
         "➕ Add Account", "👤 My Accounts",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Manage Lists", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Language",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 Remove/Logout", "🔄 Transfer",
+        "🌐 Language",
     ],
     "ms": [
         "➕ Tambah Akaun", "👤 Akaun Saya",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Kelola List", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "💬 Kelola Text", "👥 Manage Group",
+        "🗑 Hapus/Logout", "🔄 Transfer",
+        "🌐 Bahasa",
     ],
     "th": [
         "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
         "💚 Health Check", "📣 Broadcast",
-        "📋 จัดการ List", "🗑 ลบ/Logout",
-        "🔄 โอนข้อมูล", "🌐 ภาษา",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 ลบ/Logout", "🔄 โอนข้อมูล",
+        "🌐 ภาษา",
     ],
     "vi": [
         "➕ Thêm TK", "👤 Tài khoản",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Quản lý List", "🗑 Xóa/Logout",
-        "🔄 Chuyển", "🌐 Ngôn ngữ",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 Xóa/Logout", "🔄 Chuyển",
+        "🌐 Ngôn ngữ",
     ],
     "zh": [
         "➕ 添加账号", "👤 我的账号",
         "💚 健康检查", "📣 广播",
-        "📋 管理列表", "🗑 删除/登出",
-        "🔄 转移", "🌐 语言",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 删除/登出", "🔄 转移",
+        "🌐 语言",
     ],
     "ja": [
         "➕ アカウント追加", "👤 マイアカウント",
         "💚 ヘルスチェック", "📣 ブロードキャスト",
-        "📋 リスト管理", "🗑 削除/ログアウト",
-        "🔄 転送", "🌐 言語",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 削除/ログアウト", "🔄 転送",
+        "🌐 言語",
     ],
     "ko": [
         "➕ 계정 추가", "👤 내 계정",
         "💚 상태 확인", "📣 브로드캐스트",
-        "📋 목록 관리", "🗑 삭제/로그아웃",
-        "🔄 전송", "🌐 언어",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 삭제/로그아웃", "🔄 전송",
+        "🌐 언어",
     ],
     "hi": [
         "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
         "💚 Health Check", "📣 Broadcast",
-        "📋 List प्रबंधन", "🗑 हटाएं/Logout",
-        "🔄 ट्रांसफर", "🌐 भाषा",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 हटाएं/Logout", "🔄 ट्रांसफर",
+        "🌐 भाषा",
     ],
     "fil": [
         "➕ Dagdag Account", "👤 Mga Account",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Manage Lists", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Wika",
+        "💬 Manage Text", "👥 Manage Group",
+        "🗑 Remove/Logout", "🔄 Transfer",
+        "🌐 Wika",
     ],
 }
 
@@ -424,7 +435,7 @@ def _get_menu_action(text: str) -> str | None:
         if text in labels:
             idx = labels.index(text)
             return ["add", "accounts", "health", "broadcast",
-                    "lists", "cleanup", "transfer", "lang"][idx]
+                    "saved", "lists", "cleanup", "transfer", "lang"][idx]
     return None
 
 
@@ -567,6 +578,39 @@ async def cb_sm(cq: CallbackQuery) -> None:
         "Delay antar group?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
+
+
+@router.callback_query(F.data == "savetext")
+async def cb_savetext(cq: CallbackQuery) -> None:
+    await cq.answer()
+    _state[cq.from_user.id] = {"action": "savetext_name"}
+    await cq.message.edit_text("Nama text tersimpan:")
+
+
+@router.callback_query(F.data.startswith("sv:"))
+async def cb_sv(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    name = cq.data[3:]
+    found = next((s for s in get_saved_messages(uid) if s["name"] == name), None)
+    if not found:
+        await cq.message.edit_text("Text tidak ditemukan.")
+        return
+    preview = found.get("text", "")
+    if len(preview) > 3000:
+        preview = preview[:3000] + "\n\n..."
+    buttons = [[InlineKeyboardButton(text="🗑 Delete", callback_data=f"sd:{name}")]]
+    await cq.message.edit_text(
+        f"💬 {name}\n\n{preview}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+@router.callback_query(F.data.startswith("sd:"))
+async def cb_sd(cq: CallbackQuery) -> None:
+    await cq.answer()
+    delete_saved_msg(cq.from_user.id, cq.data[3:])
+    await cq.message.edit_text("Text tersimpan dihapus.")
 
 
 @router.callback_query(F.data.startswith("dt:"))
@@ -1018,17 +1062,22 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             await _reply(
                 message,
                 uid,
-                "Belum ada list broadcast. Buat list dulu di Kelola List.",
+                "Belum ada group list. Buat dulu di Manage Group.",
                 reply_markup=_main_kb(uid),
             )
             return
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"bc:{bl.name}")] for bl in lists]
         await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == "saved":
+        saved = get_saved_messages(uid)
+        buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"sv:{s['name']}")] for s in saved]
+        buttons.append([InlineKeyboardButton(text="+ Save Text", callback_data="savetext")])
+        await _reply(message, uid, "Text tersimpan:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "lists":
         lists = get_lists(uid)
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
-        buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
-        await _reply(message, uid, "Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        buttons.append([InlineKeyboardButton(text="+ Create Group List", callback_data="createlist")])
+        await _reply(message, uid, "Group list:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
@@ -1166,10 +1215,20 @@ async def handle_text(message: Message) -> None:
         state["is_2fa"] = True
         await _finish_login(message, uid)
 
+    # --- Saved text ---
+    elif action == "savetext_name":
+        _state[uid] = {"action": "savetext_body", "name": text}
+        await message.answer("Kirim isi text yang mau disimpan:", reply_markup=_back_kb())
+
+    elif action == "savetext_body":
+        save_broadcast_msg(uid, state["name"], _entities_to_html(message.text or "", message.entities or []), False)
+        _state.pop(uid, None)
+        await message.answer(f"Text '{state['name']}' tersimpan.", reply_markup=_main_kb(uid))
+
     # --- Create list ---
     elif action == "createlist_name":
         _state[uid] = {"action": "createlist_targets", "name": text, "targets": []}
-        await message.answer(f"List: {text}\n\nEnter targets one by one.\nSend 'done' when finished:")
+        await message.answer(f"Group list: {text}\n\nEnter targets one by one.\nSend 'done' when finished:")
 
     elif action == "createlist_targets":
         if text.lower() == "done":
