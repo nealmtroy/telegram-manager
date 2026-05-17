@@ -59,11 +59,15 @@ class BroadcastListRow:
 # ---------------------------------------------------------------------------
 def register_admin(user_id: int, username: str = "", first_name: str = "") -> None:
     db = _get_client()
-    db.table("admins").upsert({
-        "user_id": user_id,
+    existing = db.table("admins").select("user_id").eq("user_id", user_id).execute()
+    payload = {
         "username": username,
         "first_name": first_name,
-    }, on_conflict="user_id").execute()
+    }
+    if existing.data:
+        db.table("admins").update(payload).eq("user_id", user_id).execute()
+        return
+    db.table("admins").insert({"user_id": user_id, **payload}).execute()
 
 
 def is_registered_admin(user_id: int) -> bool:
