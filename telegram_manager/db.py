@@ -63,7 +63,7 @@ def register_admin(user_id: int, username: str = "", first_name: str = "") -> No
         "user_id": user_id,
         "username": username,
         "first_name": first_name,
-    }).execute()
+    }, on_conflict="user_id").execute()
 
 
 def is_registered_admin(user_id: int) -> bool:
@@ -78,14 +78,15 @@ def is_vip_admin(user_id: int) -> bool:
     return bool(r.data and r.data[0].get("is_vip"))
 
 
-def grant_vip(user_id: int, gifted_by: int) -> None:
+def grant_vip(user_id: int, gifted_by: int) -> bool:
     db = _get_client()
     db.table("admins").upsert({
         "user_id": user_id,
         "is_vip": True,
         "vip_gifted_by": gifted_by,
         "vip_gifted_at": datetime.now(timezone.utc).isoformat(),
-    }).execute()
+    }, on_conflict="user_id").execute()
+    return is_vip_admin(user_id)
 
 
 def is_managed_account(user_id: int) -> bool:

@@ -530,7 +530,7 @@ async def cmd_start(message: Message) -> None:
 @router.message(Command("vip", "status"))
 async def cmd_vip_status(message: Message) -> None:
     uid = message.from_user.id
-    await message.answer(f"Status kamu: {_vip_label(uid)}")
+    await message.answer(f"User ID: `{uid}`\nStatus kamu: {_vip_label(uid)}", parse_mode="Markdown")
 
 
 @router.message(Command("gift"))
@@ -551,8 +551,14 @@ async def cmd_gift(message: Message) -> None:
         await message.answer("User ID harus angka. Contoh: /gift 123456789")
         return
 
-    grant_vip(target_id, uid)
-    await message.answer(f"VIP gifted ke user `{target_id}`.", parse_mode="Markdown")
+    if not grant_vip(target_id, uid):
+        await message.answer(
+            f"Gagal verify VIP untuk user `{target_id}` setelah update DB. "
+            "Cek kolom is_vip di table admins.",
+            parse_mode="Markdown",
+        )
+        return
+    await message.answer(f"VIP aktif untuk user `{target_id}`. Status: VIP", parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
