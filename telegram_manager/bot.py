@@ -63,6 +63,59 @@ _state: Dict[int, dict] = {}
 _last_bot_msg: Dict[int, int] = {}  # uid -> message_id to delete
 
 
+def _format_delay(delay: tuple[float, float]) -> str:
+    delay_min, delay_max = delay
+    if delay_max <= 0:
+        return "none"
+    if delay_min == delay_max:
+        return f"{delay_min:g}s"
+    return f"{delay_min:g}-{delay_max:g}s"
+
+
+def _parse_delay_value(text: str) -> tuple[float, float] | None:
+    if text == "Auto (3-10s)":
+        return 3.0, 10.0
+    if text == "No delay":
+        return 0.0, 0.0
+    try:
+        if "-" in text:
+            left, right = text.split("-", 1)
+            delay_min, delay_max = float(left.strip()), float(right.strip())
+        else:
+            delay_min = delay_max = float(text.strip())
+    except ValueError:
+        return None
+    if delay_min < 0 or delay_max < 0:
+        return None
+    if delay_min > delay_max:
+        delay_min, delay_max = delay_max, delay_min
+    return delay_min, delay_max
+
+
+def _delay_value_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Auto (3-10s)"), KeyboardButton(text="No delay")],
+            [KeyboardButton(text="<< Menu")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+async def _ask_group_delay(message: Message) -> None:
+    await message.answer(
+        "Delay antar group?\nContoh: 45 atau 30-60",
+        reply_markup=_delay_value_kb(),
+    )
+
+
+async def _ask_round_delay(message: Message) -> None:
+    await message.answer(
+        "Delay setelah semua group selesai?\nContoh: 600 atau 500-700",
+        reply_markup=_delay_value_kb(),
+    )
+
+
 async def _reply(message: Message, uid: int, text: str, **kwargs):
     """Send reply and delete previous bot message to keep chat clean."""
     # Delete previous bot message
@@ -345,21 +398,47 @@ async def cb_sm(cq: CallbackQuery) -> None:
         await cq.message.edit_text("Not found.")
         return
     _state[uid]["saved_text"] = found["text"]
-    _state[uid]["action"] = "broadcast_delay_type"
-    buttons = [[InlineKeyboardButton(text="Per group", callback_data="dt:per_group"),
-                InlineKeyboardButton(text="Per round", callback_data="dt:per_round")]]
-    await cq.message.edit_text(t("delay_mode", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    _state[uid]["action"] = "broadcast_delay_group"
+    buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dg:auto"),
+                InlineKeyboardButton(text="No delay", callback_data="dg:none")]]
+    await cq.message.edit_text(
+        "Delay antar group?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
 
 
 @router.callback_query(F.data.startswith("dt:"))
 async def cb_dt(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
-    _state[uid]["delay_type"] = cq.data[3:]
-    _state[uid]["action"] = "broadcast_delay_value"
+    _state[uid]["action"] = "broadcast_delay_group"
     buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dv:auto"),
                 InlineKeyboardButton(text="No delay", callback_data="dv:none")]]
-    await cq.message.edit_text(t("delay_value", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await cq.message.edit_text("Delay antar group?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("dg:"))
+async def cb_dg(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    _state[uid]["group_delay"] = (3.0, 10.0) if cq.data[3:] == "auto" else (0.0, 0.0)
+    _state[uid]["action"] = "broadcast_delay_round"
+    buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dr:auto"),
+                InlineKeyboardButton(text="No delay", callback_data="dr:none")]]
+    await cq.message.edit_text(
+        "Delay setelah semua group selesai?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+@router.callback_query(F.data.startswith("dr:"))
+async def cb_dr(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    _state[uid]["round_delay"] = (3.0, 10.0) if cq.data[3:] == "auto" else (0.0, 0.0)
+    _state[uid]["action"] = "broadcasting"
+    await cq.message.edit_text(t("broadcast_running", uid))
+    await _start_broadcast(cq.message, uid)
 
 
 @router.callback_query(F.data.startswith("dv:"))
@@ -367,12 +446,16 @@ async def cb_dv(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
     if cq.data[3:] == "auto":
-        _state[uid]["delay"] = (3.0, 10.0)
+        _state[uid]["group_delay"] = (3.0, 10.0)
     else:
-        _state[uid]["delay"] = (0.0, 0.0)
-    _state[uid]["action"] = "broadcasting"
-    await cq.message.edit_text(t("broadcast_running", uid))
-    await _start_broadcast(cq.message, uid)
+        _state[uid]["group_delay"] = (0.0, 0.0)
+    _state[uid]["action"] = "broadcast_delay_round"
+    buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dr:auto"),
+                InlineKeyboardButton(text="No delay", callback_data="dr:none")]]
+    await cq.message.edit_text(
+        "Delay setelah semua group selesai?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
 
 
 @router.callback_query(F.data == "createlist")
@@ -572,17 +655,12 @@ async def handle_media(message: Message) -> None:
         return
     # Save full message and proceed to delay setup
     _state[uid]["message"] = message
-    _state[uid]["action"] = "broadcast_delay_type"
+    _state[uid]["action"] = "broadcast_save_ask"
     buttons = [
-        [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
+        [KeyboardButton(text="Save & continue"), KeyboardButton(text="Just continue")],
         [KeyboardButton(text="<< Menu")],
     ]
-    await message.answer(
-        "Media received.\n\nDelay mode:\n"
-        "• Per group — delay between each group\n"
-        "• Per round — delay after all groups done",
-        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-    )
+    await message.answer("Media received.\n\nSave this message for reuse?", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
 
 
 async def _start_broadcast(message: Message, uid: int) -> None:
@@ -599,8 +677,8 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         _state.pop(uid, None)
         return
 
-    delay_min, delay_max = st.get("delay", (3.0, 10.0))
-    delay_type = st.get("delay_type", "per_group")
+    group_delay_min, group_delay_max = st.get("group_delay", st.get("delay", (3.0, 10.0)))
+    round_delay_min, round_delay_max = st.get("round_delay", (0.0, 0.0))
 
     watermark = os.getenv("WATERMARK", "")
     media_bytes = None
@@ -643,6 +721,8 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         round_num += 1
         round_success = []
         round_failed = []
+        target_attempt = 0
+        total_targets = len(accounts) * len(bl.targets)
 
         for acc in accounts:
             if _state.get(uid, {}).get("action") != "broadcasting":
@@ -677,8 +757,13 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                         await asyncio.sleep(fw.seconds)
                     except Exception as ex:
                         round_failed.append(f"{acc.alias} -> {target}: {type(ex).__name__}")
-                    if delay_type == "per_group" and delay_max > 0:
-                        await asyncio.sleep(random.uniform(delay_min, delay_max))
+                    target_attempt += 1
+                    if (
+                        _state.get(uid, {}).get("action") == "broadcasting"
+                        and target_attempt < total_targets
+                        and group_delay_max > 0
+                    ):
+                        await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
             except Exception as ex:
                 round_failed.append(f"{acc.alias}: {type(ex).__name__}")
             finally:
@@ -712,8 +797,8 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                     if log_client.is_connected():
                         await log_client.disconnect()
 
-            if delay_type == "per_round" and delay_max > 0:
-                await asyncio.sleep(random.uniform(delay_min, delay_max))
+            if round_delay_max > 0:
+                await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
             else:
                 await asyncio.sleep(1)
 
@@ -1077,15 +1162,8 @@ async def handle_text(message: Message) -> None:
             _state[uid]["action"] = "broadcast_save_name"
             await message.answer("Enter a name for this saved message:", reply_markup=_back_kb())
         else:
-            _state[uid]["action"] = "broadcast_delay_type"
-            buttons = [
-                [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
-                [KeyboardButton(text="<< Menu")],
-            ]
-            await message.answer(
-                "Delay mode:\n• Per group\n• Per round",
-                reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-            )
+            _state[uid]["action"] = "broadcast_delay_group"
+            await _ask_group_delay(message)
 
     elif action == "broadcast_save_name":
         src = _state[uid]["message"]
@@ -1094,51 +1172,25 @@ async def handle_text(message: Message) -> None:
         html_text = _entities_to_html(raw_text, entities)
         has_media = bool(src.photo or src.video or src.document or src.animation)
         save_broadcast_msg(uid, text, html_text, has_media)
-        _state[uid]["action"] = "broadcast_delay_type"
-        buttons = [
-            [KeyboardButton(text="Per group"), KeyboardButton(text="Per round")],
-            [KeyboardButton(text="<< Menu")],
-        ]
-        await message.answer(
-            f"Saved as '{text}'.\n\nDelay mode:\n• Per group\n• Per round",
-            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-        )
-        await message.answer(
-            "Delay mode:\n"
-            "• Per group — delay between each group\n"
-            "• Per round — delay after all groups done",
-            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-        )
+        _state[uid]["action"] = "broadcast_delay_group"
+        await message.answer(f"Saved as '{text}'.")
+        await _ask_group_delay(message)
 
-    elif action == "broadcast_delay_type":
-        if text not in ("Per group", "Per round"):
-            await message.answer("Pick 'Per group' or 'Per round'.")
+    elif action == "broadcast_delay_group":
+        parsed_delay = _parse_delay_value(text)
+        if parsed_delay is None:
+            await message.answer("Invalid. Enter number or range (e.g. 45 or 30-60):")
             return
-        _state[uid]["delay_type"] = text.lower().replace(" ", "_")
-        _state[uid]["action"] = "broadcast_delay_value"
-        buttons = [
-            [KeyboardButton(text="Auto (3-10s)"), KeyboardButton(text="No delay")],
-            [KeyboardButton(text="<< Menu")],
-        ]
-        await message.answer(
-            "Delay duration?\nPick or type custom (e.g. '5' or '3-8'):",
-            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True),
-        )
+        _state[uid]["group_delay"] = parsed_delay
+        _state[uid]["action"] = "broadcast_delay_round"
+        await _ask_round_delay(message)
 
-    elif action == "broadcast_delay_value":
-        if text == "Auto (3-10s)":
-            delay_min, delay_max = 3.0, 10.0
-        elif text == "No delay":
-            delay_min, delay_max = 0.0, 0.0
-        elif "-" in text:
-            parts = text.split("-")
-            delay_min, delay_max = float(parts[0]), float(parts[1])
-        else:
-            try:
-                delay_min = delay_max = float(text)
-            except ValueError:
-                await message.answer("Invalid. Enter number or range (e.g. 3-8):")
-                return
+    elif action == "broadcast_delay_round":
+        parsed_delay = _parse_delay_value(text)
+        if parsed_delay is None:
+            await message.answer("Invalid. Enter number or range (e.g. 600 or 500-700):")
+            return
+        _state[uid]["round_delay"] = parsed_delay
 
         st = _state[uid]
         bl = get_list(uid, st["list"])
@@ -1148,46 +1200,19 @@ async def handle_text(message: Message) -> None:
             _state.pop(uid, None)
             return
 
-        # Build message content preserving formatting + media
         watermark = os.getenv("WATERMARK", "")
-        media_bytes = None
-        media_filename = None
         has_media = False
 
-        if "saved_text" in st:
-            # Using saved message (text only)
-            msg_text = st["saved_text"]
-        else:
-            # Using fresh message with possible media
+        if "message" in st:
             src_msg = st["message"]
-            raw_text = src_msg.text or src_msg.caption or ""
-            entities = src_msg.entities or src_msg.caption_entities or []
-            msg_text = _entities_to_html(raw_text, entities)
             has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
 
-            if has_media:
-                if src_msg.photo:
-                    media_bytes = await src_msg.bot.download(src_msg.photo[-1], destination=None)
-                    media_filename = "photo.jpg"
-                elif src_msg.video:
-                    media_bytes = await src_msg.bot.download(src_msg.video, destination=None)
-                    media_filename = src_msg.video.file_name or "video.mp4"
-                elif src_msg.animation:
-                    media_bytes = await src_msg.bot.download(src_msg.animation, destination=None)
-                    media_filename = "animation.gif"
-                elif src_msg.document:
-                    media_bytes = await src_msg.bot.download(src_msg.document, destination=None)
-                    media_filename = src_msg.document.file_name or "file"
-
-        if watermark:
-            msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
-
-        delay_type = st["delay_type"]
         await message.answer(
             f"Broadcasting (continuous)\n"
             f"List: {st['list']} ({len(bl.targets)} targets)\n"
             f"Accounts: {len(accounts)}\n"
-            f"Delay: {delay_type.replace('_',' ')} | {delay_min}-{delay_max}s\n"
+            f"Delay per group: {_format_delay(st['group_delay'])}\n"
+            f"Delay after all groups: {_format_delay(st['round_delay'])}\n"
             f"Media: {'yes' if has_media else 'text only'}\n"
             f"Watermark: {watermark or '(none)'}\n\n"
             f"Running... send 'stop' to stop",
@@ -1197,102 +1222,8 @@ async def handle_text(message: Message) -> None:
             ),
         )
 
-        _state[uid] = {"action": "broadcasting"}
-
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
-        from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
-        from datetime import datetime, timezone
-
-        bot = message.bot
-        log_dest = _log_chat_id()
-        round_num = 0
-
-        while _state.get(uid, {}).get("action") == "broadcasting":
-            round_num += 1
-            round_success = []
-            round_failed = []
-
-            for acc in accounts:
-                if _state.get(uid, {}).get("action") != "broadcasting":
-                    break
-                client = _client_from_session(acc.session_string, acc.device_preset)
-                try:
-                    await client.connect()
-                    await client.get_me()
-                    for target in bl.targets:
-                        if _state.get(uid, {}).get("action") != "broadcasting":
-                            break
-                        try:
-                            if "t.me/+" in target or "joinchat/" in target:
-                                await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
-                            else:
-                                await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
-                        except Exception:
-                            pass
-                        try:
-                            e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
-                            if has_media and media_bytes:
-                                await client.send_file(
-                                    e, media_bytes,
-                                    caption=msg_text,
-                                    parse_mode="html",
-                                    file_name=media_filename,
-                                )
-                            else:
-                                await client.send_message(e, msg_text, parse_mode="html")
-                            round_success.append(f"{acc.alias} -> {target}")
-                        except (ChatWriteForbiddenError, UserBannedInChannelError) as ex:
-                            round_failed.append(f"{acc.alias} -> {target}: Blocked/Banned")
-                        except SlowModeWaitError as sme:
-                            round_failed.append(f"{acc.alias} -> {target}: SlowMode {sme.seconds}s")
-                        except FloodWaitError as fw:
-                            round_failed.append(f"{acc.alias} -> {target}: FloodWait {fw.seconds}s")
-                            await asyncio.sleep(fw.seconds)
-                        except Exception as ex:
-                            round_failed.append(f"{acc.alias} -> {target}: {type(ex).__name__}")
-                        if delay_type == "per_group" and delay_max > 0:
-                            await asyncio.sleep(random.uniform(delay_min, delay_max))
-                except Exception as ex:
-                    round_failed.append(f"{acc.alias}: {type(ex).__name__}")
-                finally:
-                    if client.is_connected():
-                        await client.disconnect()
-
-            # Send round summary log
-            if _state.get(uid, {}).get("action") == "broadcasting":
-                now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                log_lines = [f"Round {round_num} | {now}"]
-                log_lines.append(f"Sent: {len(round_success)}")
-                if round_success:
-                    log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
-                if round_failed:
-                    log_lines.append(f"Failed: {len(round_failed)}")
-                    log_lines.append("Errors:\n  " + "\n  ".join(round_failed))
-                log_text = "\n".join(log_lines)
-                # Always send to admin via bot
-                try:
-                    await bot.send_message(uid, log_text)
-                except Exception:
-                    pass
-                # Also send to LOG_CHAT_ID via Telethon if configured
-                if log_dest:
-                    log_client = _client_from_session(accounts[0].session_string, accounts[0].device_preset)
-                    try:
-                        await log_client.connect()
-                        await log_client.send_message(log_dest, log_text)
-                    except Exception:
-                        pass
-                    finally:
-                        if log_client.is_connected():
-                            await log_client.disconnect()
-
-                if delay_type == "per_round" and delay_max > 0:
-                    await asyncio.sleep(random.uniform(delay_min, delay_max))
-                else:
-                    await asyncio.sleep(1)
-
-        await bot.send_message(message.chat.id, "Broadcast stopped.", reply_markup=_main_kb())
+        _state[uid]["action"] = "broadcasting"
+        await _start_broadcast(message, uid)
 
     elif action == "broadcasting":
         if text.lower() == "stop":
