@@ -11,7 +11,7 @@ import random
 from typing import Dict
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -42,8 +42,10 @@ from .db import (
     get_list,
     get_lists,
     get_saved_messages,
+    grant_vip,
     is_managed_account,
     is_registered_admin,
+    is_vip_admin,
     register_admin,
     remove_account,
     remove_list,
@@ -198,6 +200,38 @@ def _log_chat_id():
         return raw  # username like @mylogchannel
 
 
+def _owner_ids() -> set[int]:
+    raw = os.getenv("OWNER_IDS", "") or os.getenv("OWNER_ID", "")
+    ids: set[int] = set()
+    for part in raw.replace(",", " ").split():
+        try:
+            ids.add(int(part.strip()))
+        except ValueError:
+            continue
+    return ids
+
+
+def _is_owner(user_id: int) -> bool:
+    return user_id in _owner_ids()
+
+
+def _vip_label(user_id: int) -> str:
+    if _is_owner(user_id):
+        return "OWNER"
+    try:
+        if is_vip_admin(user_id):
+            return "VIP"
+    except Exception:
+        log.exception("Failed to fetch VIP status for %s", user_id)
+    return "FREE"
+
+
+def _watermark_for_user(user_id: int) -> str:
+    if _vip_label(user_id) in {"OWNER", "VIP"}:
+        return ""
+    return os.getenv("WATERMARK", "")
+
+
 def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
     lang = get_lang(uid) if uid else "id"
     labels = _MENU_LABELS.get(lang, _MENU_LABELS["id"])
@@ -328,9 +362,40 @@ async def cmd_start(message: Message) -> None:
     accounts = get_accounts(uid)
     if not accounts:
         _state[uid] = {"action": "login_phone"}
-        await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
+        await message.answer(f"Status: {_vip_label(uid)}\n\n{t('welcome_new', uid)}", reply_markup=_back_kb())
         return
-    await message.answer(t("main_menu", uid, n=len(accounts)), reply_markup=_main_kb())
+    await message.answer(
+        f"Status: {_vip_label(uid)}\n\n{t('main_menu', uid, n=len(accounts))}",
+        reply_markup=_main_kb(uid),
+    )
+
+
+@router.message(Command("vip", "status"))
+async def cmd_vip_status(message: Message) -> None:
+    uid = message.from_user.id
+    await message.answer(f"Status kamu: {_vip_label(uid)}")
+
+
+@router.message(Command("gift"))
+async def cmd_gift(message: Message) -> None:
+    uid = message.from_user.id
+    if not _is_owner(uid):
+        await message.answer("Access denied. Command ini khusus owner.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /gift <telegram_user_id>")
+        return
+
+    try:
+        target_id = int(parts[1].strip())
+    except ValueError:
+        await message.answer("User ID harus angka. Contoh: /gift 123456789")
+        return
+
+    grant_vip(target_id, uid)
+    await message.answer(f"VIP gifted ke user `{target_id}`.", parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +745,7 @@ async def _start_broadcast(message: Message, uid: int) -> None:
     group_delay_min, group_delay_max = st.get("group_delay", st.get("delay", (3.0, 10.0)))
     round_delay_min, round_delay_max = st.get("round_delay", (0.0, 0.0))
 
-    watermark = os.getenv("WATERMARK", "")
+    watermark = _watermark_for_user(uid)
     media_bytes = None
     media_filename = None
     has_media = False
@@ -1200,7 +1265,7 @@ async def handle_text(message: Message) -> None:
             _state.pop(uid, None)
             return
 
-        watermark = os.getenv("WATERMARK", "")
+        watermark = _watermark_for_user(uid)
         has_media = False
 
         if "message" in st:

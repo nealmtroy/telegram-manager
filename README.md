@@ -73,7 +73,11 @@ Edit `.env`:
 TELEGRAM_API_ID=1234567
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
 LOG_LEVEL=INFO
+OWNER_IDS=123456789,987654321
 ```
+
+`OWNER_IDS` is a comma/space-separated list of Telegram user IDs allowed to run
+owner-only commands such as `/gift <telegram_user_id>`.
 
 Never commit `.env` or anything in `sessions/`. Both are in `.gitignore`.
 

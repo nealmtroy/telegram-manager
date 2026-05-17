@@ -7,8 +7,15 @@ create table if not exists admins (
     username text,
     first_name text,
     lang text default 'en',
+    is_vip boolean default false,
+    vip_gifted_by bigint,
+    vip_gifted_at timestamptz,
     registered_at timestamptz default now()
 );
+
+alter table admins add column if not exists is_vip boolean default false;
+alter table admins add column if not exists vip_gifted_by bigint;
+alter table admins add column if not exists vip_gifted_at timestamptz;
 
 -- Managed accounts (Telethon sessions stored as StringSession)
 create table if not exists accounts (

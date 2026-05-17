@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from supabase import create_client, Client
@@ -69,6 +70,22 @@ def is_registered_admin(user_id: int) -> bool:
     db = _get_client()
     r = db.table("admins").select("user_id").eq("user_id", user_id).execute()
     return len(r.data) > 0
+
+
+def is_vip_admin(user_id: int) -> bool:
+    db = _get_client()
+    r = db.table("admins").select("is_vip").eq("user_id", user_id).execute()
+    return bool(r.data and r.data[0].get("is_vip"))
+
+
+def grant_vip(user_id: int, gifted_by: int) -> None:
+    db = _get_client()
+    db.table("admins").upsert({
+        "user_id": user_id,
+        "is_vip": True,
+        "vip_gifted_by": gifted_by,
+        "vip_gifted_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
 
 
 def is_managed_account(user_id: int) -> bool:
