@@ -189,6 +189,114 @@ def _new_client(preset_key: str = "random"):
     return client, preset
 
 
+def _invite_hash(target: str) -> str | None:
+    text = target.strip()
+    if "joinchat/" in text:
+        return text.split("joinchat/", 1)[1].split("?", 1)[0].strip("/")
+    if "t.me/+" in text:
+        return text.split("t.me/+", 1)[1].split("?", 1)[0].strip("/")
+    if text.startswith("+"):
+        return text[1:].split("?", 1)[0].strip("/")
+    return None
+
+
+def _chatlist_slug(target: str) -> str | None:
+    text = target.strip()
+    if "t.me/addlist/" in text:
+        return text.split("t.me/addlist/", 1)[1].split("?", 1)[0].strip("/")
+    if "telegram.me/addlist/" in text:
+        return text.split("telegram.me/addlist/", 1)[1].split("?", 1)[0].strip("/")
+    if text.startswith("addlist/"):
+        return text.split("addlist/", 1)[1].split("?", 1)[0].strip("/")
+    return None
+
+
+def _public_target(target: str) -> str:
+    text = target.strip()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text.lstrip("@").split("?", 1)[0].strip("/")
+
+
+def _chatlist_peers(invite) -> list:
+    if hasattr(invite, "peers"):
+        return list(invite.peers or [])
+    peers = []
+    peers.extend(getattr(invite, "missing_peers", []) or [])
+    peers.extend(getattr(invite, "already_peers", []) or [])
+    return peers
+
+
+async def _join_and_resolve_chatlist(client: TelegramClient, target: str) -> list:
+    from telethon.tl.functions.chatlists import CheckChatlistInviteRequest, JoinChatlistInviteRequest
+
+    slug = _chatlist_slug(target)
+    if not slug:
+        return []
+
+    invite = await client(CheckChatlistInviteRequest(slug))
+    peers = _chatlist_peers(invite)
+    input_peers = []
+    for peer in peers:
+        try:
+            input_peers.append(await client.get_input_entity(peer))
+        except Exception:
+            pass
+
+    if input_peers:
+        try:
+            await client(JoinChatlistInviteRequest(slug, input_peers))
+        except Exception:
+            pass
+
+    entities = []
+    for peer in peers:
+        try:
+            entities.append(await client.get_entity(peer))
+        except Exception:
+            pass
+    return entities
+
+
+async def _join_and_resolve_target(client: TelegramClient, target: str):
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+
+    invite = _invite_hash(target)
+    if invite:
+        try:
+            updates = await client(ImportChatInviteRequest(invite))
+            if getattr(updates, "chats", None):
+                return updates.chats[0]
+        except Exception:
+            invite_info = await client(CheckChatInviteRequest(invite))
+            chat = getattr(invite_info, "chat", None)
+            if chat:
+                return chat
+            raise
+
+    public = _public_target(target)
+    if public.lstrip("-").isdigit():
+        return await client.get_entity(int(public))
+    try:
+        updates = await client(JoinChannelRequest(public))
+        if getattr(updates, "chats", None):
+            return updates.chats[0]
+    except Exception:
+        pass
+    return await client.get_entity(public)
+
+
+async def _broadcast_entities_for_target(client: TelegramClient, target: str) -> list:
+    if _chatlist_slug(target):
+        entities = await _join_and_resolve_chatlist(client, target)
+        if entities:
+            return entities
+    return [await _join_and_resolve_target(client, target)]
+
+
 def _log_chat_id():
     """Get log destination from env. Can be user_id (int) or @username."""
     raw = os.getenv("LOG_CHAT_ID", "")
@@ -241,7 +349,6 @@ def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
             [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
             [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
-            [KeyboardButton(text=labels[8])],
         ],
         resize_keyboard=True,
     )
@@ -251,72 +358,62 @@ _MENU_LABELS = {
     "id": [
         "➕ Tambah Akun", "👤 Akun Saya",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Kelola List", "📥 Join Group",
-        "🗑 Hapus/Logout", "🔄 Transfer",
-        "🌐 Bahasa",
+        "📋 Kelola List", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
     ],
     "en": [
         "➕ Add Account", "👤 My Accounts",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Manage Lists", "📥 Join Group",
-        "🗑 Remove/Logout", "🔄 Transfer",
-        "🌐 Language",
+        "📋 Manage Lists", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Language",
     ],
     "ms": [
         "➕ Tambah Akaun", "👤 Akaun Saya",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Kelola List", "📥 Join Group",
-        "🗑 Hapus/Logout", "🔄 Transfer",
-        "🌐 Bahasa",
+        "📋 Kelola List", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
     ],
     "th": [
         "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
         "💚 Health Check", "📣 Broadcast",
-        "📋 จัดการ List", "📥 เข้าร่วมกลุ่ม",
-        "🗑 ลบ/Logout", "🔄 โอนข้อมูล",
-        "🌐 ภาษา",
+        "📋 จัดการ List", "🗑 ลบ/Logout",
+        "🔄 โอนข้อมูล", "🌐 ภาษา",
     ],
     "vi": [
         "➕ Thêm TK", "👤 Tài khoản",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Quản lý List", "📥 Tham gia",
-        "🗑 Xóa/Logout", "🔄 Chuyển",
-        "🌐 Ngôn ngữ",
+        "📋 Quản lý List", "🗑 Xóa/Logout",
+        "🔄 Chuyển", "🌐 Ngôn ngữ",
     ],
     "zh": [
         "➕ 添加账号", "👤 我的账号",
         "💚 健康检查", "📣 广播",
-        "📋 管理列表", "📥 加入群组",
-        "🗑 删除/登出", "🔄 转移",
-        "🌐 语言",
+        "📋 管理列表", "🗑 删除/登出",
+        "🔄 转移", "🌐 语言",
     ],
     "ja": [
         "➕ アカウント追加", "👤 マイアカウント",
         "💚 ヘルスチェック", "📣 ブロードキャスト",
-        "📋 リスト管理", "📥 グループ参加",
-        "🗑 削除/ログアウト", "🔄 転送",
-        "🌐 言語",
+        "📋 リスト管理", "🗑 削除/ログアウト",
+        "🔄 転送", "🌐 言語",
     ],
     "ko": [
         "➕ 계정 추가", "👤 내 계정",
         "💚 상태 확인", "📣 브로드캐스트",
-        "📋 목록 관리", "📥 그룹 참여",
-        "🗑 삭제/로그아웃", "🔄 전송",
-        "🌐 언어",
+        "📋 목록 관리", "🗑 삭제/로그아웃",
+        "🔄 전송", "🌐 언어",
     ],
     "hi": [
         "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
         "💚 Health Check", "📣 Broadcast",
-        "📋 List प्रबंधन", "📥 Group जॉइन",
-        "🗑 हटाएं/Logout", "🔄 ट्रांसफर",
-        "🌐 भाषा",
+        "📋 List प्रबंधन", "🗑 हटाएं/Logout",
+        "🔄 ट्रांसफर", "🌐 भाषा",
     ],
     "fil": [
         "➕ Dagdag Account", "👤 Mga Account",
         "💚 Health Check", "📣 Broadcast",
-        "📋 Manage Lists", "📥 Join Group",
-        "🗑 Remove/Logout", "🔄 Transfer",
-        "🌐 Wika",
+        "📋 Manage Lists", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Wika",
     ],
 }
 
@@ -327,7 +424,7 @@ def _get_menu_action(text: str) -> str | None:
         if text in labels:
             idx = labels.index(text)
             return ["add", "accounts", "health", "broadcast",
-                    "lists", "join", "cleanup", "transfer", "lang"][idx]
+                    "lists", "cleanup", "transfer", "lang"][idx]
     return None
 
 
@@ -580,13 +677,6 @@ async def cb_dl(cq: CallbackQuery) -> None:
     await cq.message.edit_text("Deleted.")
 
 
-@router.callback_query(F.data.startswith("join:"))
-async def cb_join(cq: CallbackQuery) -> None:
-    await cq.answer()
-    _state[cq.from_user.id] = {"action": "join_target", "alias": cq.data[5:]}
-    await cq.message.edit_text("Enter group/channel username or invite link:")
-
-
 @router.callback_query(F.data.startswith("edit:"))
 async def cb_edit(cq: CallbackQuery) -> None:
     await cq.answer()
@@ -730,8 +820,6 @@ async def handle_media(message: Message) -> None:
 
 async def _start_broadcast(message: Message, uid: int) -> None:
     """Start the continuous broadcast loop."""
-    from telethon.tl.functions.channels import JoinChannelRequest
-    from telethon.tl.functions.messages import ImportChatInviteRequest
     from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
     from datetime import datetime, timezone
 
@@ -802,19 +890,17 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                     if _state.get(uid, {}).get("action") != "broadcasting":
                         break
                     try:
-                        if "t.me/+" in target or "joinchat/" in target:
-                            await client(ImportChatInviteRequest(target.split("+")[-1].split("joinchat/")[-1]))
-                        else:
-                            await client(JoinChannelRequest(target.lstrip("@").replace("https://t.me/", "")))
-                    except Exception:
-                        pass
-                    try:
-                        e = target.lstrip("@").replace("https://t.me/", "").split("+")[0]
-                        if has_media and media_bytes:
-                            await client.send_file(e, media_bytes, caption=msg_text, parse_mode="html", file_name=media_filename)
-                        else:
-                            await client.send_message(e, msg_text, parse_mode="html")
+                        entities = await _broadcast_entities_for_target(client, target)
+                        sent_count = 0
+                        for entity in entities:
+                            if has_media and media_bytes:
+                                await client.send_file(entity, media_bytes, caption=msg_text, parse_mode="html", file_name=media_filename)
+                            else:
+                                await client.send_message(entity, msg_text, parse_mode="html")
+                            sent_count += 1
                         success_line = f"{acc.alias} -> {target}"
+                        if sent_count > 1:
+                            success_line += f" ({sent_count} chats)"
                         round_success.append(success_line)
                         acc_success.append(success_line)
                     except (ChatWriteForbiddenError, UserBannedInChannelError):
@@ -929,7 +1015,12 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
     elif action == "broadcast":
         lists = get_lists(uid)
         if not lists:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(
+                message,
+                uid,
+                "Belum ada list broadcast. Buat list dulu di Kelola List.",
+                reply_markup=_main_kb(uid),
+            )
             return
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"bc:{bl.name}")] for bl in lists]
         await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -938,12 +1029,6 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
         buttons.append([InlineKeyboardButton(text="+ Create List", callback_data="createlist")])
         await _reply(message, uid, "Lists:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    elif action == "join":
-        if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
-            return
-        buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"join:{a.alias}")] for a in accounts]
-        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
@@ -1137,31 +1222,6 @@ async def handle_text(message: Message) -> None:
         except ValueError:
             await message.answer("Ketik nomor yang mau dihapus (pisah spasi), contoh: 1 3 5")
 
-    # --- Join ---
-    elif action == "join_target":
-        alias = state["alias"]
-        _state.pop(uid, None)
-        acc = find_account(uid, alias)
-        if not acc:
-            await message.answer("Account not found.", reply_markup=_back_kb())
-            return
-        client = _client_from_session(acc.session_string, acc.device_preset)
-        try:
-            await client.connect()
-            await client.get_me()
-            from telethon.tl.functions.channels import JoinChannelRequest
-            from telethon.tl.functions.messages import ImportChatInviteRequest
-            if "t.me/+" in text or "joinchat/" in text:
-                await client(ImportChatInviteRequest(text.split("+")[-1].split("joinchat/")[-1]))
-            else:
-                await client(JoinChannelRequest(text.lstrip("@").replace("https://t.me/", "")))
-            await message.answer(f"[{alias}] Joined {text}", reply_markup=_back_kb())
-        except Exception as e:
-            await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-
     # --- Edit name ---
     elif action == "edit_name":
         alias = state["alias"]
@@ -1320,15 +1380,6 @@ async def handle_text(message: Message) -> None:
             await message.answer(f"List '{name}' deleted.", reply_markup=_main_kb())
         else:
             await message.answer("Pick a list from the buttons.")
-
-    # --- Join pick account ---
-    elif action == "join_pick":
-        acc = find_account(uid, text)
-        if not acc:
-            await message.answer("Account not found. Pick from buttons.")
-            return
-        _state[uid] = {"action": "join_target", "alias": text}
-        await message.answer(f"Account: {text}\n\nEnter group/channel username or invite link:", reply_markup=_back_kb())
 
     # --- Edit pick account ---
     elif action == "edit_pick":
