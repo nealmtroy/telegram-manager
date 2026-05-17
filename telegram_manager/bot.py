@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 from typing import Dict
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -218,6 +219,54 @@ def _public_target(target: str) -> str:
             text = text[len(prefix):]
             break
     return text.lstrip("@").split("?", 1)[0].strip("/")
+
+
+_TELEGRAM_URL_RE = re.compile(
+    r"(?:https?://)?(?:t\.me|telegram\.me)/"
+    r"(?:addlist/[A-Za-z0-9_-]+|\+[A-Za-z0-9_-]+|joinchat/[A-Za-z0-9_-]+|[A-Za-z0-9_][A-Za-z0-9_/?=&.-]*)",
+    re.IGNORECASE,
+)
+_TELEGRAM_USERNAME_RE = re.compile(r"(?<![A-Za-z0-9_])@[A-Za-z0-9_]{5,32}\b")
+
+
+def _clean_target_token(token: str) -> str:
+    return token.strip().strip(".,;:()[]{}<>")
+
+
+def _extract_group_targets(text: str) -> list[str]:
+    """Extract Telegram targets from pasted labels, usernames, links, or IDs."""
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        target = _clean_target_token(raw)
+        if not target:
+            return
+        key = target.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        targets.append(target)
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        for match in _TELEGRAM_URL_RE.findall(line):
+            add(match)
+        for match in _TELEGRAM_USERNAME_RE.findall(line):
+            add(match)
+
+        compact = _clean_target_token(line)
+        if _TELEGRAM_URL_RE.fullmatch(compact):
+            add(compact)
+        elif compact.startswith(("+", "addlist/", "joinchat/")):
+            add(compact)
+        elif re.fullmatch(r"-?\d{5,}", compact):
+            add(compact)
+
+    return targets
 
 
 def _chatlist_peers(invite) -> list:
@@ -696,7 +745,7 @@ async def cb_la(cq: CallbackQuery) -> None:
     _state[uid] = {"action": "listadd_targets", "list": cq.data[3:]}
     await cq.message.edit_text(
         f"[{cq.data[3:]}] Kirim target yang mau ditambah:\n"
-        "(satu per baris — @username / chat_id / https://t.me/xxx)")
+        "(boleh paste daftar campur nama + @username / chat_id / https://t.me/xxx / addlist)")
 
 
 @router.callback_query(F.data.startswith("lr:"))
@@ -1228,7 +1277,11 @@ async def handle_text(message: Message) -> None:
     # --- Create list ---
     elif action == "createlist_name":
         _state[uid] = {"action": "createlist_targets", "name": text, "targets": []}
-        await message.answer(f"Group list: {text}\n\nEnter targets one by one.\nSend 'done' when finished:")
+        await message.answer(
+            f"Group list: {text}\n\n"
+            "Paste daftar group/link. Bisa campur nama + @username/link invite/addlist.\n"
+            "Kirim 'done' kalau sudah selesai:"
+        )
 
     elif action == "createlist_targets":
         if text.lower() == "done":
@@ -1240,8 +1293,24 @@ async def handle_text(message: Message) -> None:
                 await message.answer(f"List '{state['name']}' created ({len(targets)} targets).", reply_markup=_back_kb())
             _state.pop(uid, None)
         else:
-            state["targets"].append(text)
-            await message.answer(f"Added: {text} ({len(state['targets'])} total)\n\nNext target or 'done':")
+            new_targets = _extract_group_targets(text)
+            existing = {target.lower() for target in state["targets"]}
+            added = [target for target in new_targets if target.lower() not in existing]
+            state["targets"].extend(added)
+            if not added:
+                await message.answer(
+                    "Belum nemu target Telegram di pesan itu.\n"
+                    "Kirim @username, t.me link, invite private, addlist, atau chat_id."
+                )
+                return
+            preview = "\n".join(f"- {target}" for target in added[:10])
+            if len(added) > 10:
+                preview += f"\n... +{len(added) - 10} lagi"
+            await message.answer(
+                f"Added {len(added)} target:\n{preview}\n\n"
+                f"Total: {len(state['targets'])}\n"
+                "Kirim target lain atau 'done':"
+            )
 
     # --- List edit: add targets ---
     elif action == "listadd_targets":
@@ -1251,12 +1320,21 @@ async def handle_text(message: Message) -> None:
             await message.answer("List not found.", reply_markup=_back_kb())
             _state.pop(uid, None)
             return
-        new_targets = [line.strip() for line in text.split("\n") if line.strip()]
-        bl.targets.extend(new_targets)
+        new_targets = _extract_group_targets(text)
+        existing = {target.lower() for target in bl.targets}
+        added = [target for target in new_targets if target.lower() not in existing]
+        if not added:
+            await message.answer(
+                "Belum nemu target Telegram baru di pesan itu.",
+                reply_markup=_back_kb(),
+            )
+            _state.pop(uid, None)
+            return
+        bl.targets.extend(added)
         add_list(bl)
         _state.pop(uid, None)
         await message.answer(
-            f"✅ Ditambah {len(new_targets)} target ke '{list_name}' (total: {len(bl.targets)})",
+            f"✅ Ditambah {len(added)} target ke '{list_name}' (total: {len(bl.targets)})",
             reply_markup=_main_kb(uid))
 
     # --- List edit: remove targets ---
