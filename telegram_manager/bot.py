@@ -602,11 +602,53 @@ async def cb_bc(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
     list_name = cq.data[3:]
+    _state[uid] = {"action": "broadcast_mode_choice", "list": list_name}
+    buttons = [
+        [InlineKeyboardButton(text="Single Text", callback_data="bm:single")],
+        [InlineKeyboardButton(text="Multi Random", callback_data="bm:multi")],
+        [InlineKeyboardButton(text="New message", callback_data="newmsg")],
+    ]
+    await cq.message.edit_text(
+        f"List: {list_name}\nPilih mode text broadcast:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+@router.callback_query(F.data == "bm:single")
+async def cb_bm_single(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
     saved = get_saved_messages(uid)
-    _state[uid] = {"action": "broadcast_msg_choice", "list": list_name}
+    if not saved:
+        await cq.message.edit_text("Belum ada text tersimpan. Simpan text dulu di Kelola Text.")
+        _state.pop(uid, None)
+        return
+    _state[uid]["action"] = "broadcast_msg_choice"
     buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"sm:{s['name']}")] for s in saved]
-    buttons.append([InlineKeyboardButton(text="New message", callback_data="newmsg")])
-    await cq.message.edit_text(f"List: {list_name}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await cq.message.edit_text(
+        "Pilih text tersimpan:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+@router.callback_query(F.data == "bm:multi")
+async def cb_bm_multi(cq: CallbackQuery) -> None:
+    await cq.answer()
+    uid = cq.from_user.id
+    saved = get_saved_messages(uid)
+    if not saved:
+        await cq.message.edit_text("Belum ada text tersimpan. Simpan text dulu di Kelola Text.")
+        _state.pop(uid, None)
+        return
+    _state[uid]["saved_texts"] = [s["text"] for s in saved]
+    _state[uid]["text_mode"] = "multi_random"
+    _state[uid]["action"] = "broadcast_delay_group"
+    buttons = [[InlineKeyboardButton(text="Auto (3-10s)", callback_data="dg:auto"),
+                InlineKeyboardButton(text="No delay", callback_data="dg:none")]]
+    await cq.message.edit_text(
+        f"Multi Random aktif ({len(saved)} text).\nDelay antar group?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
 
 
 @router.callback_query(F.data == "newmsg")
@@ -937,8 +979,11 @@ async def _start_broadcast(message: Message, uid: int) -> None:
     media_filename = None
     has_media = False
 
+    saved_texts = st.get("saved_texts") or []
     if "saved_text" in st:
         msg_text = st["saved_text"]
+    elif saved_texts:
+        msg_text = ""
     elif "message" in st:
         src_msg = st["message"]
         raw_text = src_msg.text or src_msg.caption or ""
@@ -962,8 +1007,11 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         _state.pop(uid, None)
         return
 
-    if watermark:
-        msg_text = (msg_text + f"\n\n{watermark}") if msg_text else watermark
+    def message_text_for_send() -> str:
+        selected_text = random.choice(saved_texts) if saved_texts else msg_text
+        if watermark:
+            return (selected_text + f"\n\n{watermark}") if selected_text else watermark
+        return selected_text
 
     bot = message.bot
     log_dest = _log_chat_id()
@@ -992,10 +1040,11 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                         entities = await _broadcast_entities_for_target(client, target)
                         sent_count = 0
                         for entity in entities:
+                            text_to_send = message_text_for_send()
                             if has_media and media_bytes:
-                                await client.send_file(entity, media_bytes, caption=msg_text, parse_mode="html", file_name=media_filename)
+                                await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
                             else:
-                                await client.send_message(entity, msg_text, parse_mode="html")
+                                await client.send_message(entity, text_to_send, parse_mode="html")
                             sent_count += 1
                         success_line = f"{acc.alias} -> {target}"
                         if sent_count > 1:
@@ -1488,6 +1537,13 @@ async def handle_text(message: Message) -> None:
         watermark = _watermark_for_user(uid)
         has_media = False
 
+        if st.get("saved_texts"):
+            text_mode = f"multi random ({len(st['saved_texts'])} text)"
+        elif st.get("saved_text"):
+            text_mode = "single saved text"
+        else:
+            text_mode = "new message"
+
         if "message" in st:
             src_msg = st["message"]
             has_media = bool(src_msg.photo or src_msg.video or src_msg.document or src_msg.animation)
@@ -1496,6 +1552,7 @@ async def handle_text(message: Message) -> None:
             f"Broadcasting (continuous)\n"
             f"List: {st['list']} ({len(bl.targets)} targets)\n"
             f"Accounts: {len(accounts)}\n"
+            f"Text mode: {text_mode}\n"
             f"Delay per group: {_format_delay(st['group_delay'])}\n"
             f"Delay after all groups: {_format_delay(st['round_delay'])}\n"
             f"Media: {'yes' if has_media else 'text only'}\n"
