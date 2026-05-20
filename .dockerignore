@@ -1,0 +1,15 @@
+.git
+.claude
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+venv
+.venv
+sessions
+logs
+accounts.json

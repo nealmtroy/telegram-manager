@@ -83,6 +83,77 @@ Never commit `.env` or anything in `sessions/`. Both are in `.gitignore`.
 
 ---
 
+## Deployment
+
+Telegram Manager can run anywhere that supports a long-running Python process. The default production recommendation for a small DigitalOcean Ubuntu droplet is Python virtualenv with systemd.
+
+### Required environment variables
+
+Set these values in `.env` for every deployment target:
+
+```dotenv
+BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_KEY=your-supabase-key
+TELEGRAM_API_ID=1234567
+TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
+OWNER_IDS=123456789,987654321
+```
+
+### Ubuntu VPS with systemd
+
+Recommended for small VPS instances such as a 1 vCPU / 512 MB RAM DigitalOcean droplet.
+
+```bash
+sudo bash deploy/systemd/install.sh
+sudo nano /opt/telegram-manager/.env
+sudo systemctl start telegram-manager
+sudo systemctl status telegram-manager
+sudo journalctl -u telegram-manager -f
+```
+
+The installer copies the app to `/opt/telegram-manager`, creates a Python virtualenv, installs dependencies, creates a `telegram-manager` service user, installs the systemd service, and enables it at boot.
+
+After pulling updates, rerun the installer from the repository and restart the service:
+
+```bash
+sudo bash deploy/systemd/install.sh
+sudo systemctl restart telegram-manager
+```
+
+### Docker
+
+Docker is useful for portability, but systemd is lighter for very small VPS instances.
+
+```bash
+cp .env.example .env
+# edit .env
+touch accounts.json
+
+docker compose up -d --build
+docker compose logs -f
+```
+
+New Docker hosts need an `accounts.json` file before the first run because it is mounted as a file.
+
+Docker persists `sessions/`, `logs/`, and `accounts.json` on the host.
+
+### Railway
+
+Railway remains supported through `railway.json`, which starts the bot with:
+
+```bash
+python bot_main.py
+```
+
+Set the required environment variables in the Railway project settings.
+
+### Cloudflare Workers
+
+Cloudflare Workers is not a runtime target for this app. Telegram Manager is a Python long-running bot using aiogram, Telethon, session files, and Supabase. Workers is designed for JavaScript/TypeScript request handlers at the edge, not this process model. Cloudflare can still be used for DNS or tunneling if needed.
+
+---
+
 ## Usage
 
 ### Interactive menu

@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram Manager Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-manager
+Group=telegram-manager
+WorkingDirectory=/opt/telegram-manager
+EnvironmentFile=/opt/telegram-manager/.env
+ExecStart=/opt/telegram-manager/venv/bin/python /opt/telegram-manager/bot_main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

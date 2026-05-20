@@ -1,0 +1,11 @@
+services:
+  telegram-manager:
+    build: .
+    container_name: telegram-manager
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./sessions:/app/sessions
+      - ./logs:/app/logs
+      - ./accounts.json:/app/accounts.json
