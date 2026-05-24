@@ -672,6 +672,14 @@ def _back_kb() -> ReplyKeyboardMarkup:
     )
 
 
+def _phone_contact_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📂 Kirim Nomor", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
 def _accounts_kb(admin_id: int) -> ReplyKeyboardMarkup:
     """Generate account selection as reply keyboard."""
     accounts = get_accounts(admin_id)
@@ -697,11 +705,16 @@ async def cmd_start(message: Message) -> None:
     _state.pop(uid, None)
     status = _vip_label(uid)
     if not accounts:
-        await message.answer(_welcome_text(message, uid, accounts, status), reply_markup=_main_kb(uid, has_accounts=False))
+        await message.answer(
+            _welcome_text(message, uid, accounts, status),
+            reply_markup=_main_kb(uid, has_accounts=False),
+            parse_mode="HTML",
+        )
         return
     await message.answer(
         _welcome_text(message, uid, accounts, status),
         reply_markup=_main_kb(uid, has_accounts=True),
+        parse_mode="HTML",
     )
 
 
@@ -1341,14 +1354,14 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
     # Must have at least 1 account to use anything except "add" and "lang"
     if not accounts and action not in ("add", "lang"):
         _state[uid] = {"action": "login_phone"}
-        await _reply(message, uid, t("welcome_new", uid), reply_markup=_back_kb())
+        await _reply(message, uid, t("welcome_new", uid), reply_markup=_back_kb(), parse_mode="HTML")
         return
     if action == "add":
         _state[uid] = {"action": "login_phone"}
-        await _reply(message, uid, t("enter_phone", uid), reply_markup=_back_kb())
+        await _reply(message, uid, t("enter_phone", uid), reply_markup=_phone_contact_kb(), parse_mode="HTML")
     elif action == "accounts":
         if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
             return
         buttons = []
         for a in accounts:
@@ -1356,7 +1369,7 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             if a.username:
                 label += f" (@{a.username})"
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"acc:{a.alias}")])
-        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     elif action == "broadcast":
         lists = get_lists(uid)
         if not lists:
@@ -1368,29 +1381,35 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             )
             return
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"bc:{bl.name}")] for bl in lists]
-        await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     elif action == "saved":
         saved = get_saved_messages(uid)
         buttons = _saved_message_buttons(uid, "sv")
         buttons.append([InlineKeyboardButton(text="+ Save Text", callback_data="savetext")])
-        await _reply(message, uid, t("saved_text_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("saved_text_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     elif action == "lists":
         lists = get_lists(uid)
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
         buttons.append([InlineKeyboardButton(text="+ Create Group List", callback_data="createlist")])
-        await _reply(message, uid, t("group_list_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("group_list_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     elif action == "cleanup":
         if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
             return
         buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"clean:{a.alias}")] for a in accounts]
-        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     elif action == "transfer":
         if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
             return
         _state[uid] = {"action": "transfer_target"}
-        await _reply(message, uid, f"Enter user ID to transfer {len(accounts)} account(s) to:", reply_markup=_back_kb())
+        await _reply(
+            message,
+            uid,
+            f"🔄 <b>Transfer Data</b>\n\nKirim user ID admin tujuan untuk memindahkan <b>{len(accounts)} akun</b>.\n\n<blockquote>Pastikan user tujuan sudah pernah membuka bot dengan /start.</blockquote>",
+            reply_markup=_back_kb(),
+            parse_mode="HTML",
+        )
     elif action == "lang":
         buttons, row = [], []
         for code, name in LANGUAGES.items():

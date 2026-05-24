@@ -146,13 +146,16 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(uid, bot._state)
         self.assertEqual(len(message.answers), 1)
         text, kwargs = message.answers[0]
-        self.assertIn("Hi Neal Troy", text)
+        self.assertIn("👋🏻 Hai!, <b>Neal Troy</b>", text)
         self.assertIn("membantu kamu membuat dan mengelola userbot Telegram", text)
-        self.assertIn("Username: @neal", text)
-        self.assertIn(f"User ID: {uid}", text)
-        self.assertIn("First Name: Neal", text)
-        self.assertIn("Last Name: Troy", text)
-        self.assertIn("tekan tombol \"Tambah Akun\"", text)
+        self.assertIn("<blockquote>", text)
+        self.assertIn("👤 <b>Username:</b> @neal", text)
+        self.assertIn(f"🆔 <b>User ID:</b> {uid}", text)
+        self.assertIn("🪪 <b>First Name:</b> Neal", text)
+        self.assertIn("🧾 <b>Last Name:</b> Troy", text)
+        self.assertNotIn("Akun userbot", text)
+        self.assertIn("tekan tombol <b>Tambah Akun</b>", text)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
         keyboard = kwargs["reply_markup"].keyboard
         labels = [button.text for row in keyboard for button in row]
         self.assertIn("➕ Tambah Akun", labels)
@@ -173,7 +176,10 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(uid, bot._state)
         text, kwargs = message.answers[0]
-        self.assertIn("Telegram Manager (1 akun)", text)
+        self.assertIn("🏠 <b>Telegram Manager</b>", text)
+        self.assertIn("<blockquote>", text)
+        self.assertIn("👥 <b>Akun aktif:</b> 1", text)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
         labels = [button.text for row in kwargs["reply_markup"].keyboard for button in row]
         self.assertIn("👤 Akun Saya", labels)
         self.assertIn("👥 Manage Group", labels)
@@ -188,11 +194,13 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "get_saved_messages", return_value=saved):
             await bot._dispatch_menu(message, uid, "saved")
 
-        text = message.answers[0][0]
-        self.assertIn("Kelola Text", text)
+        text, kwargs = message.answers[0]
+        self.assertIn("💬 <b>Kelola Text</b>", text)
         self.assertIn("template pesan broadcast", text)
-        self.assertIn("Save Text", text)
-        keyboard = message.answers[0][1]["reply_markup"].inline_keyboard
+        self.assertIn("<blockquote>", text)
+        self.assertIn("➕ <b>Save Text</b>", text)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
+        keyboard = kwargs["reply_markup"].inline_keyboard
         callback_data = keyboard[0][0].callback_data
         self.assertLessEqual(len(callback_data.encode("utf-8")), 64)
         self.assertNotIn(long_name, callback_data)
@@ -206,16 +214,59 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "get_lists", return_value=lists):
             await bot._dispatch_menu(message, uid, "broadcast")
 
-        self.assertIn("Pilih daftar group tujuan broadcast", message.answers[0][0])
-        self.assertIn("Manage Group", message.answers[0][0])
+        broadcast_text, broadcast_kwargs = message.answers[0]
+        self.assertIn("📣 <b>Broadcast</b>", broadcast_text)
+        self.assertIn("Pilih daftar group tujuan broadcast", broadcast_text)
+        self.assertIn("<blockquote>", broadcast_text)
+        self.assertIn("👥 <b>Manage Group</b>", broadcast_text)
+        self.assertEqual(broadcast_kwargs["parse_mode"], "HTML")
 
         group_message = FakeMessage(uid, "👥 Manage Group")
         with patch.object(bot, "get_accounts", return_value=[SimpleNamespace(alias="acc1")]), \
              patch.object(bot, "get_lists", return_value=lists):
             await bot._dispatch_menu(group_message, uid, "lists")
 
-        self.assertIn("Manage Group", group_message.answers[0][0])
-        self.assertIn("daftar target group", group_message.answers[0][0])
+        group_text, group_kwargs = group_message.answers[0]
+        self.assertIn("👥 <b>Manage Group</b>", group_text)
+        self.assertIn("daftar target group", group_text)
+        self.assertIn("<blockquote>", group_text)
+        self.assertIn("@username", group_text)
+        self.assertEqual(group_kwargs["parse_mode"], "HTML")
+
+    async def test_primary_account_prompts_use_rich_html_copy(self):
+        uid = 1011
+        account = SimpleNamespace(alias="acc1", display_name="Neal Bot", username="nealbot")
+
+        add_message = FakeMessage(uid, "➕ Tambah Akun")
+        with patch.object(bot, "get_accounts", return_value=[]):
+            await bot._dispatch_menu(add_message, uid, "add")
+        add_text, add_kwargs = add_message.answers[0]
+        self.assertIn("➕ <b>Tambah Akun Userbot</b>", add_text)
+        self.assertIn("<blockquote>", add_text)
+        self.assertIn("<code>+628123456789</code>", add_text)
+        self.assertEqual(add_kwargs["parse_mode"], "HTML")
+        keyboard = add_kwargs["reply_markup"].keyboard
+        self.assertEqual(keyboard[0][0].text, "📂 Kirim Nomor")
+        self.assertTrue(keyboard[0][0].request_contact)
+        self.assertNotIn("<< Menu", [button.text for row in keyboard for button in row])
+
+        account_message = FakeMessage(uid, "👤 Akun Saya")
+        with patch.object(bot, "get_accounts", return_value=[account]):
+            await bot._dispatch_menu(account_message, uid, "accounts")
+        account_text, account_kwargs = account_message.answers[0]
+        self.assertIn("👤 <b>Akun Saya</b>", account_text)
+        self.assertIn("lihat detail", account_text)
+        self.assertIn("<blockquote>", account_text)
+        self.assertEqual(account_kwargs["parse_mode"], "HTML")
+
+        transfer_message = FakeMessage(uid, "🔄 Transfer")
+        with patch.object(bot, "get_accounts", return_value=[account]):
+            await bot._dispatch_menu(transfer_message, uid, "transfer")
+        transfer_text, transfer_kwargs = transfer_message.answers[0]
+        self.assertIn("🔄 <b>Transfer Data</b>", transfer_text)
+        self.assertIn("<blockquote>", transfer_text)
+        self.assertIn("<b>1 akun</b>", transfer_text)
+        self.assertEqual(transfer_kwargs["parse_mode"], "HTML")
 
     async def test_english_welcome_copy_is_user_friendly(self):
         uid = 1010
@@ -230,10 +281,13 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
             await bot.cmd_start(message)
 
         text = message.answers[0][0]
-        self.assertIn("Hi Neal Troy", text)
+        self.assertIn("👋🏻 Hi!, <b>Neal Troy</b>", text)
         self.assertIn("create and manage Telegram userbots", text)
-        self.assertIn("Username: @neal", text)
-        self.assertIn("press \"Add Account\"", text)
+        self.assertIn("<blockquote>", text)
+        self.assertIn("👤 <b>Username:</b> @neal", text)
+        self.assertNotIn("Userbot accounts", text)
+        self.assertIn("press <b>Add Account</b>", text)
+        self.assertEqual(message.answers[0][1]["parse_mode"], "HTML")
 
 
 if __name__ == "__main__":
