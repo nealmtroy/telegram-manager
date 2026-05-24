@@ -1273,13 +1273,12 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                 log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
             if round_failed:
                 log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
-            # Send log via admin's Telethon account (not bot)
             log_text = "\n".join(log_lines)
-            # Always send to admin via bot (private chat)
-            try:
-                await bot.send_message(uid, log_text)
-            except Exception:
-                pass
+            if not log_dest:
+                try:
+                    await bot.send_message(uid, log_text)
+                except Exception:
+                    pass
             if round_delay_max > 0:
                 await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
             else:
@@ -1363,18 +1362,18 @@ async def handle_text(message: Message) -> None:
 
     text = message.text.strip()
     state = _state.get(uid)
+    menu_action = _get_menu_action(text)
 
-    # Check if it's a menu button press (no active state)
+    if menu_action and (not state or state.get("action") not in {"login_code", "login_2fa"}):
+        _state.pop(uid, None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await _dispatch_menu(message, uid, menu_action)
+        return
+
     if not state:
-        menu_action = _get_menu_action(text)
-        if menu_action:
-            # Delete user's button press message
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            await _dispatch_menu(message, uid, menu_action)
-            return
         n = len(get_accounts(uid))
         await message.answer(t("main_menu", uid, n=n), reply_markup=_main_kb(uid))
         return
@@ -1719,6 +1718,7 @@ async def handle_text(message: Message) -> None:
     elif action == "broadcasting":
         if text.lower() == "stop":
             _state.pop(uid, None)
+            await message.answer("Stopping broadcast...")
         else:
             await message.answer("Send 'stop' to stop.")
     elif action == "deletelist_pick":
