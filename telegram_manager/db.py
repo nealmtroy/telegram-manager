@@ -92,7 +92,7 @@ def register_admin(user_id: int, username: str = "", first_name: str = "") -> No
     if existing.data:
         db.table("admins").update(payload).eq("user_id", user_id).execute()
         return
-    db.table("admins").insert({"user_id": user_id, **payload}).execute()
+    db.table("admins").insert({"user_id": user_id, "lang": "id", **payload}).execute()
 
 
 def is_registered_admin(user_id: int) -> bool:

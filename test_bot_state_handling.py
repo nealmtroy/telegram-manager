@@ -7,7 +7,7 @@ from telegram_manager import bot
 
 class FakeMessage:
     def __init__(self, uid: int, text: str):
-        self.from_user = SimpleNamespace(id=uid)
+        self.from_user = SimpleNamespace(id=uid, username="", first_name="")
         self.chat = SimpleNamespace(id=uid)
         self.bot = AsyncMock()
         self.text = text
@@ -129,6 +129,47 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
 
         summary_calls = [call for call in message.bot.send_message.await_args_list if call.args[0] == uid and "Round" in call.args[1]]
         self.assertEqual(len(summary_calls), 1)
+
+    async def test_start_without_accounts_shows_welcome_and_add_account_menu_without_login_state(self):
+        uid = 1006
+        message = FakeMessage(uid, "/start")
+
+        with patch.object(bot, "is_managed_account", return_value=False), \
+             patch.object(bot, "register_admin") as register_admin, \
+             patch.object(bot, "get_admin_lang", return_value="id"), \
+             patch.object(bot, "get_accounts", return_value=[]), \
+             patch.object(bot, "_vip_label", return_value="FREE"):
+            await bot.cmd_start(message)
+
+        register_admin.assert_called_once_with(uid, "", "")
+        self.assertNotIn(uid, bot._state)
+        self.assertEqual(len(message.answers), 1)
+        text, kwargs = message.answers[0]
+        self.assertIn("Selamat datang", text)
+        keyboard = kwargs["reply_markup"].keyboard
+        labels = [button.text for row in keyboard for button in row]
+        self.assertIn("➕ Tambah Akun", labels)
+        self.assertIn("🌐 Bahasa", labels)
+        self.assertNotIn("👤 Akun Saya", labels)
+
+    async def test_start_with_accounts_shows_full_indonesian_menu(self):
+        uid = 1007
+        message = FakeMessage(uid, "/start")
+        account = SimpleNamespace(alias="acc1")
+
+        with patch.object(bot, "is_managed_account", return_value=False), \
+             patch.object(bot, "register_admin"), \
+             patch.object(bot, "get_admin_lang", return_value="id"), \
+             patch.object(bot, "get_accounts", return_value=[account]), \
+             patch.object(bot, "_vip_label", return_value="FREE"):
+            await bot.cmd_start(message)
+
+        self.assertNotIn(uid, bot._state)
+        text, kwargs = message.answers[0]
+        self.assertIn("Telegram Manager (1 akun)", text)
+        labels = [button.text for row in kwargs["reply_markup"].keyboard for button in row]
+        self.assertIn("👤 Akun Saya", labels)
+        self.assertIn("👥 Manage Group", labels)
 
 
 if __name__ == "__main__":

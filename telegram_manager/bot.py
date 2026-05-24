@@ -533,18 +533,19 @@ async def _auto_health_check_loop(bot: Bot) -> None:
         await asyncio.sleep(_auto_health_check_interval_seconds())
 
 
-def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
+def _main_kb(uid: int = 0, has_accounts: bool = True) -> ReplyKeyboardMarkup:
     lang = get_lang(uid) if uid else "id"
     labels = _MENU_LABELS.get(lang, _MENU_LABELS["id"])
-    return ReplyKeyboardMarkup(
-        keyboard=[
+    if not has_accounts:
+        keyboard = [[KeyboardButton(text=labels[0])], [KeyboardButton(text=labels[7])]]
+    else:
+        keyboard = [
             [KeyboardButton(text=labels[0]), KeyboardButton(text=labels[1])],
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
             [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
             [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
-        ],
-        resize_keyboard=True,
-    )
+        ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 _MENU_LABELS = {
@@ -650,13 +651,13 @@ async def cmd_start(message: Message) -> None:
     lang = get_admin_lang(uid)
     set_lang(uid, lang)
     accounts = get_accounts(uid)
+    _state.pop(uid, None)
     if not accounts:
-        _state[uid] = {"action": "login_phone"}
-        await message.answer(f"Status: {_vip_label(uid)}\n\n{t('welcome_new', uid)}", reply_markup=_back_kb())
+        await message.answer(f"Status: {_vip_label(uid)}\n\n{t('welcome_new', uid)}", reply_markup=_main_kb(uid, has_accounts=False))
         return
     await message.answer(
         f"Status: {_vip_label(uid)}\n\n{t('main_menu', uid, n=len(accounts))}",
-        reply_markup=_main_kb(uid),
+        reply_markup=_main_kb(uid, has_accounts=True),
     )
 
 
