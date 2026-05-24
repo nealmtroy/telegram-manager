@@ -171,6 +171,21 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("👤 Akun Saya", labels)
         self.assertIn("👥 Manage Group", labels)
 
+    async def test_saved_text_menu_uses_short_callback_data_for_long_names(self):
+        uid = 1008
+        message = FakeMessage(uid, "💬 Kelola Text")
+        long_name = "promo 🚀 " * 20
+        saved = [{"name": long_name, "text": "hello"}]
+
+        with patch.object(bot, "get_accounts", return_value=[SimpleNamespace(alias="acc1")]), \
+             patch.object(bot, "get_saved_messages", return_value=saved):
+            await bot._dispatch_menu(message, uid, "saved")
+
+        keyboard = message.answers[0][1]["reply_markup"].inline_keyboard
+        callback_data = keyboard[0][0].callback_data
+        self.assertLessEqual(len(callback_data.encode("utf-8")), 64)
+        self.assertNotIn(long_name, callback_data)
+
 
 if __name__ == "__main__":
     unittest.main()

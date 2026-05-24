@@ -622,6 +622,24 @@ def _get_menu_action(text: str) -> str | None:
     return None
 
 
+def _saved_message_at(admin_id: int, raw_index: str) -> dict | None:
+    try:
+        index = int(raw_index)
+    except ValueError:
+        return None
+    saved = get_saved_messages(admin_id)
+    if 0 <= index < len(saved):
+        return saved[index]
+    return None
+
+
+def _saved_message_buttons(admin_id: int, prefix: str) -> list[list[InlineKeyboardButton]]:
+    return [
+        [InlineKeyboardButton(text=s["name"], callback_data=f"{prefix}:{index}")]
+        for index, s in enumerate(get_saved_messages(admin_id))
+    ]
+
+
 def _back_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="<< Menu")]],
@@ -758,7 +776,7 @@ async def cb_bm_single(cq: CallbackQuery) -> None:
         _state.pop(uid, None)
         return
     _state[uid]["action"] = "broadcast_msg_choice"
-    buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"sm:{s['name']}")] for s in saved]
+    buttons = _saved_message_buttons(uid, "sm")
     await cq.message.edit_text(
         "Pilih text tersimpan:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -797,7 +815,7 @@ async def cb_newmsg(cq: CallbackQuery) -> None:
 async def cb_sm(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
-    found = next((s for s in get_saved_messages(uid) if s["name"] == cq.data[3:]), None)
+    found = _saved_message_at(uid, cq.data[3:])
     if not found:
         await cq.message.edit_text("Not found.")
         return
@@ -822,15 +840,15 @@ async def cb_savetext(cq: CallbackQuery) -> None:
 async def cb_sv(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
-    name = cq.data[3:]
-    found = next((s for s in get_saved_messages(uid) if s["name"] == name), None)
+    found = _saved_message_at(uid, cq.data[3:])
     if not found:
         await cq.message.edit_text("Text tidak ditemukan.")
         return
+    name = found["name"]
     preview = found.get("text", "")
     if len(preview) > 3000:
         preview = preview[:3000] + "\n\n..."
-    buttons = [[InlineKeyboardButton(text="🗑 Delete", callback_data=f"sd:{name}")]]
+    buttons = [[InlineKeyboardButton(text="🗑 Delete", callback_data=f"sd:{cq.data[3:]}")]]
     await cq.message.edit_text(
         f"💬 {name}\n\n{preview}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -840,7 +858,11 @@ async def cb_sv(cq: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("sd:"))
 async def cb_sd(cq: CallbackQuery) -> None:
     await cq.answer()
-    delete_saved_msg(cq.from_user.id, cq.data[3:])
+    found = _saved_message_at(cq.from_user.id, cq.data[3:])
+    if not found:
+        await cq.message.edit_text("Text tidak ditemukan.")
+        return
+    delete_saved_msg(cq.from_user.id, found["name"])
     await cq.message.edit_text("Text tersimpan dihapus.")
 
 
@@ -1323,7 +1345,7 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         await _reply(message, uid, t("broadcast_pick_list", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "saved":
         saved = get_saved_messages(uid)
-        buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"sv:{s['name']}")] for s in saved]
+        buttons = _saved_message_buttons(uid, "sv")
         buttons.append([InlineKeyboardButton(text="+ Save Text", callback_data="savetext")])
         await _reply(message, uid, "Text tersimpan:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "lists":
