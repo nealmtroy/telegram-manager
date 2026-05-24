@@ -1,11 +1,12 @@
 # Telegram Manager
 
-Manage multiple Telegram accounts from a single terminal-based tool, including
-accounts with Two-Step Verification (2FA) enabled.
+Manage multiple Telegram accounts through a terminal CLI or a Telegram bot UI.
+The bot mode stores accounts in Supabase using Telethon `StringSession` values and
+supports scalable multi-account broadcasting.
 
-Built on top of [Telethon](https://docs.telethon.dev/), with an interactive
-CLI powered by [Rich](https://rich.readthedocs.io/) and
-[Questionary](https://questionary.readthedocs.io/).
+Built on top of [Telethon](https://docs.telethon.dev/), with a terminal CLI powered
+by [Rich](https://rich.readthedocs.io/) / [Questionary](https://questionary.readthedocs.io/)
+and a Telegram bot interface powered by aiogram.
 
 License: GPL-3.0 — see [LICENSE](LICENSE).
 
@@ -13,16 +14,19 @@ License: GPL-3.0 — see [LICENSE](LICENSE).
 
 ## Features
 
-- Login multiple accounts — each stored as its own Telethon session file
-- Automatic 2FA detection — prompts for cloud password with hint when needed
-- Device spoofing — randomized or fixed device fingerprint per account
-  (iPhone, Samsung, Pixel, Desktop) so sessions look like real devices
-- Single-account mode — run actions on one selected account
-- Multi-account mode — broadcast actions concurrently across many accounts
-- Health check — probe all sessions in parallel to spot revoked logins
-- Re-login / logout — refresh a session, switch device, or revoke it
-- Structured logging — colored console + rotating file log (5 MB x 3)
-- Robust error handling — typed exceptions for every Telethon error
+- Login and manage multiple Telegram accounts
+- Bot-mode account storage in Supabase with Telethon string sessions
+- Automatic 2FA detection during login
+- Device spoofing with randomized or fixed device fingerprints
+- Saved broadcast texts, including multi-random text mode
+- Saved group/broadcast target lists with pasted list parsing
+- Bounded parallel broadcasts across managed accounts
+- Multi `api_id` / `api_hash` credential pool for large account pools
+- Proxy pool support through `proxies.txt` or inline environment variables
+- Owner/VIP controls, including `/gift`
+- Owner runtime error alerts with duplicate cooldown
+- Automatic bot-mode account health checks twice daily, alerting owners only on errors
+- Terminal CLI remains available for local JSON/session-file workflows
 
 ---
 
@@ -53,66 +57,74 @@ pip install -r requirements.txt
 
 Requires Python 3.9+.
 
-### 4. Get Telegram API credentials
-
-1. Go to https://my.telegram.org/apps and sign in.
-2. Create a new application (any title/platform works).
-3. Copy `api_id` (number) and `api_hash` (32-char string).
-4. Tip: set the app title to "Telegram iOS" and platform to "iOS" if you
-   want sessions to appear as the official Telegram app.
-
-### 5. Configure .env
+### 4. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Minimum bot-mode variables:
 
 ```dotenv
+BOT_TOKEN=123456:ABC-DEF
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_KEY=your-supabase-key
 TELEGRAM_API_ID=1234567
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
-LOG_LEVEL=INFO
 OWNER_IDS=123456789,987654321
+LOG_LEVEL=INFO
+```
+
+For larger deployments, add optional scaling settings:
+
+```dotenv
+TELEGRAM_API_CREDENTIALS=111111:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;222222:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+TELEGRAM_API_ACCOUNT_LIMIT=250
+BROADCAST_PER_ADMIN_CONCURRENCY=15
+BROADCAST_GLOBAL_CONCURRENCY=150
+TELEGRAM_PROXIES_FILE=proxies.txt
+OWNER_ERROR_ALERT_COOLDOWN_SECONDS=600
+AUTO_HEALTH_CHECK_INTERVAL_SECONDS=43200
 ```
 
 `OWNER_IDS` is a comma/space-separated list of Telegram user IDs allowed to run
-owner-only commands such as `/gift <telegram_user_id>`.
+owner-only commands such as `/gift <telegram_user_id>` and receive runtime error
+alerts.
 
-Never commit `.env` or anything in `sessions/`. Both are in `.gitignore`.
+Never commit `.env`, session files, Supabase keys, bot tokens, or proxy files.
+They are intentionally ignored by `.gitignore`.
 
 ---
 
-## Usage
+## Running
 
-### Interactive menu
+### Telegram bot mode
+
+```bash
+python bot_main.py
+```
+
+The bot UI is button/text-driven. New users default to Indonesian language and can
+switch language from the menu.
+
+Bot-mode health checks are automatic. The manual Health Check menu is intentionally
+removed; the bot checks accounts every 12 hours by default and sends owner alerts
+only when a runtime/account health error occurs.
+
+### Terminal CLI mode
 
 ```bash
 python main.py
 ```
 
-Menu options:
+Useful CLI flags:
 
-```
-Add / login account
-List accounts
-Health check (all)
-Single-account action
-Multi-account action
-Re-login account
-Remove account
-Logout (revoke session)
-Exit
-```
-
-### Command-line flags
-
-| Flag          | Purpose                                                          |
-|---------------|------------------------------------------------------------------|
-| `--debug`     | Verbose logs, including Telethon internals                       |
-| `--list`      | Print the account table and exit                                 |
-| `--health`    | Run a health check and exit (exit code 1 if any account fails)   |
-| `--env PATH`  | Use an alternate .env file                                       |
+| Flag          | Purpose                                                        |
+|---------------|----------------------------------------------------------------|
+| `--debug`     | Verbose logs, including Telethon internals                     |
+| `--list`      | Print the local account table and exit                         |
+| `--health`    | Run a local CLI health check and exit                          |
+| `--env PATH`  | Use an alternate `.env` file                                   |
 
 ```bash
 python main.py --debug
@@ -122,164 +134,148 @@ python main.py --health
 
 ---
 
-## First-time walkthrough
+## Supabase schema note
 
-### Adding an account (no 2FA)
+Bot mode stores admins, accounts, broadcast lists, saved messages, language
+preferences, and VIP status in Supabase.
 
-1. Select "Add / login account"
-2. Enter phone in international form: `+628123456789`
-3. Pick a short alias (e.g. `main`)
-4. Pick a device preset (or leave as Random)
-5. Enter the 5-digit login code
-6. Done — session saved to `sessions/628123456789.session`
+For API/proxy assignment persistence, make sure the `accounts` table has these
+optional columns:
 
-### Adding an account with 2FA
-
-Same flow, but after the login code the CLI will prompt:
-
-```
-Account +62... has 2FA enabled; prompting for password.
-Enter your 2FA cloud password (hint: my-dog): ********
+```sql
+alter table accounts
+add column if not exists api_credential_index integer,
+add column if not exists proxy_index integer;
 ```
 
-Wrong password returns you to the menu to retry.
+The app can still run without those columns, but new account API/proxy routing is
+more stable when they exist.
 
-### Single-account action
+---
 
-1. Pick "Single-account action" then select the account
-2. Choose "Get profile" or "Send a message"
-3. For send-message: provide target (@username, user_id, phone, or `me`)
+## Proxy pool
 
-### Broadcasting across accounts
+For large proxy pools, prefer a `proxies.txt` file and set:
 
-1. Pick "Multi-account action"
-2. Toggle accounts with space, confirm with Enter
-3. Pick the action — each account runs concurrently (4 parallel by default)
-4. Results table shows success/failure per account
+```dotenv
+TELEGRAM_PROXIES_FILE=proxies.txt
+```
+
+Format: one proxy URL per line. Blank lines and `#` comments are ignored.
+
+```text
+socks5://user:pass@host1:1080
+socks5://user:pass@host2:1080
+http://user:pass@host3:8080
+```
+
+`proxies.txt` and `*.proxies.txt` are gitignored. Upload the file to your VPS
+separately and restrict permissions, for example:
+
+```bash
+chmod 600 proxies.txt
+```
+
+Inline proxy pools are also supported:
+
+```dotenv
+TELEGRAM_PROXIES=socks5://user:pass@host1:1080;socks5://user:pass@host2:1080
+```
+
+Legacy single-proxy variables (`PROXY_TYPE`, `PROXY_HOST`, `PROXY_PORT`,
+`PROXY_USER`, `PROXY_PASS`) are still supported.
+
+---
+
+## Broadcast scaling
+
+Bot broadcasts run accounts in parallel with bounded concurrency:
+
+- `BROADCAST_PER_ADMIN_CONCURRENCY` limits active broadcasting accounts for one admin.
+- `BROADCAST_GLOBAL_CONCURRENCY` limits active broadcasting accounts across the bot process.
+
+Targets are still sent sequentially per account to reduce rate-limit pressure.
+When multiple saved texts are selected, each target send chooses one text randomly.
+
+For large account pools, configure multiple API credentials with
+`TELEGRAM_API_CREDENTIALS`. New accounts are distributed across credentials using
+`TELEGRAM_API_ACCOUNT_LIMIT` as the soft preferred account count per credential.
 
 ---
 
 ## Device presets
 
-Each account gets a device fingerprint that shows up in Telegram's
-"Active Sessions" panel. The default is **Random** — a different device
-is picked from a pool on each login.
+Each account gets a device fingerprint that shows up in Telegram's Active Sessions
+panel. The default is **Random**.
 
-Available presets:
+Available preset keys include:
 
-| Key                  | Device shown                              |
-|----------------------|-------------------------------------------|
-| random (default)     | Random pick from 19 devices               |
-| iphone_17_pro_max    | iPhone 17 Pro Max, iOS 19.0               |
-| iphone_17_pro        | iPhone 17 Pro, iOS 19.0                   |
-| iphone_16_pro_max    | iPhone 16 Pro Max, iOS 18.5               |
-| iphone_16_pro        | iPhone 16 Pro, iOS 18.5                   |
-| iphone_15_pro_max    | iPhone 15 Pro Max, iOS 18.5               |
-| iphone_15_pro        | iPhone 15 Pro, iOS 18.5                   |
-| samsung_s25_ultra    | Samsung Galaxy S25 Ultra, Android 15      |
-| samsung_s24_ultra    | Samsung Galaxy S24 Ultra, Android 14      |
-| pixel_9_pro          | Google Pixel 9 Pro, Android 15            |
-| desktop_windows      | PC 64bit, Windows 11                      |
-| desktop_macos        | MacBook Pro, macOS 15                     |
-
-All presets use your own api_id/api_hash from `.env`. The app name shown
-in Active Sessions is whatever you set at my.telegram.org (tip: set it to
-"Telegram iOS" for maximum stealth).
-
-Use "Re-login account" to switch an account's device preset.
+| Key                  | Device shown                         |
+|----------------------|--------------------------------------|
+| random               | Random pick from the preset pool     |
+| iphone_17_pro_max    | iPhone 17 Pro Max                    |
+| iphone_17_pro        | iPhone 17 Pro                        |
+| iphone_16_pro_max    | iPhone 16 Pro Max                    |
+| iphone_16_pro        | iPhone 16 Pro                        |
+| iphone_15_pro_max    | iPhone 15 Pro Max                    |
+| iphone_15_pro        | iPhone 15 Pro                        |
+| samsung_s25_ultra    | Samsung Galaxy S25 Ultra             |
+| samsung_s24_ultra    | Samsung Galaxy S24 Ultra             |
+| pixel_9_pro          | Google Pixel 9 Pro                   |
+| desktop_windows      | PC 64bit, Windows                    |
+| desktop_macos        | MacBook Pro, macOS                   |
 
 ---
 
 ## Project layout
 
-```
+```text
 telegram-manager/
 ├── .env.example
 ├── .gitignore
+├── bot_main.py              # Telegram bot entry point
 ├── main.py                  # CLI entry point
 ├── requirements.txt
 ├── README.md
-├── LICENSE
-├── sessions/                # .session files (gitignored)
+├── CLAUDE.md
+├── sessions/                # local .session files (gitignored)
 ├── logs/                    # rotating logs (gitignored)
-├── accounts.json            # account metadata (gitignored)
+├── accounts.json            # local CLI account metadata (gitignored)
 └── telegram_manager/
     ├── __init__.py
-    ├── config.py            # .env loader
-    ├── logger.py            # Rich console + rotating file handler
-    ├── exceptions.py        # Typed domain errors
-    ├── device_presets.py    # Device fingerprint catalog + randomizer
-    ├── storage.py           # accounts.json management
-    ├── auth.py              # Login flow + 2FA detection
-    ├── manager.py           # Multi-account orchestration
-    └── cli.py               # Interactive menu
+    ├── auth.py              # CLI login flow + 2FA handling
+    ├── bot.py               # aiogram bot UI and bot-mode orchestration
+    ├── cli.py               # terminal interactive menu
+    ├── config.py            # .env loader, API/proxy/concurrency config
+    ├── db.py                # Supabase storage layer
+    ├── device_presets.py    # device fingerprint catalog
+    ├── exceptions.py        # typed domain errors
+    ├── i18n.py              # bot UI translations
+    ├── logger.py            # logging setup
+    ├── manager.py           # CLI account operations
+    └── storage.py           # local JSON storage for CLI mode
 ```
 
 ---
 
 ## Debugging
 
-Run with `--debug` for full Telethon transport-level logs in both console
-and `logs/telegram_manager.log`.
+Run with `--debug` for full Telethon transport-level logs in both console and
+`logs/telegram_manager.log`.
 
 Common issues:
 
 | Symptom | Fix |
 |---------|-----|
-| Missing required env var | Create `.env` with API_ID and API_HASH |
-| Flood wait: retry in N seconds | Rate limited — wait it out |
-| Session no longer authorized | Session revoked — use Re-login |
+| Missing required env var | Create `.env` and fill the variables needed for the selected mode |
+| Flood wait: retry in N seconds | Rate limited — wait it out or lower concurrency |
+| Session no longer authorized | Re-login the account |
 | 2FA password incorrect | Wrong cloud password — check hint |
-| reCAPTCHA wall hit | See below |
+| Proxy connection failures | Check proxy URL format, credentials, country, and provider quality |
+| Supabase errors | Verify `SUPABASE_URL`, `SUPABASE_KEY`, and table schema |
 
 ### reCAPTCHA wall
 
-If you see "Telegram is demanding a reCAPTCHA challenge", it means either:
-
-- The phone number has no Telegram account yet (register via official app first)
-- Your api_id is being rate-limited for this number
-
-Workarounds:
-
-1. Register the number via the official Telegram app first, then login here
-2. Wait a few hours and retry
-3. Try from a different IP
-
----
-
-## Security notes
-
-- Session files and `accounts.json` are equivalent to logged-in devices.
-  Never push them to Git.
-- Use "Logout" to revoke sessions you don't need — it calls Telegram's
-  `log_out` and deletes the local file.
-- `.gitignore` covers `.env`, `sessions/`, `logs/`, and `accounts.json`.
-
----
-
-## Extending
-
-The manager's broadcast primitive is generic:
-
-```python
-from telegram_manager.manager import TelegramManager
-from telegram_manager.config import load_config
-
-async def my_action(client, account):
-    await client.send_message("me", f"Hello from {account.alias}!")
-    return "ok"
-
-cfg = load_config()
-mgr = TelegramManager(cfg)
-results = await mgr.run_on_all(my_action, concurrency=3)
-for r in results:
-    print(r.account.alias, r.success, r.error)
-```
-
-Any async callable `(client, account) -> Any` works.
-
----
-
-## License
-
-GNU General Public License v3.0. See [LICENSE](LICENSE).
+If Telegram demands a reCAPTCHA challenge, the phone number may need to be
+registered through the official app first, or the API credential/proxy may be
+rate-limited. Try a cleaner proxy, lower concurrency, or wait before retrying.

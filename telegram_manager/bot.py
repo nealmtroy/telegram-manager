@@ -9,7 +9,7 @@ import asyncio
 import os
 import random
 import re
-from typing import Dict
+from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
@@ -38,7 +38,9 @@ from .db import (
     add_list,
     delete_saved_msg,
     find_account,
+    get_account_count,
     get_accounts,
+    get_admin_ids,
     get_admin_lang,
     get_list,
     get_lists,
@@ -64,6 +66,9 @@ router = Router()
 # Per-user state for multi-step flows
 _state: Dict[int, dict] = {}
 _last_bot_msg: Dict[int, int] = {}  # uid -> message_id to delete
+_global_broadcast_sem: Optional[asyncio.Semaphore] = None
+_global_broadcast_sem_limit: Optional[int] = None
+_owner_error_alerts: Dict[str, float] = {}
 
 
 def _format_delay(delay: tuple[float, float]) -> str:
@@ -167,25 +172,79 @@ def _entities_to_html(text: str, entities) -> str:
     return result
 
 
-def _client_from_session(session_string: str, preset_key: str) -> TelegramClient:
+def _stable_index(*parts: object, modulo: int) -> Optional[int]:
+    if modulo <= 0:
+        return None
+    text = ":".join(str(p) for p in parts if p is not None)
+    return sum(text.encode("utf-8")) % modulo
+
+
+def _api_index_for_account(acc: AccountRow) -> Optional[int]:
+    cfg = load_config()
+    if not cfg.api_credentials:
+        return None
+    if acc.api_credential_index is not None:
+        return acc.api_credential_index
+    limit = max(1, cfg.api_account_limit)
+    bucket = _stable_index(acc.admin_id, acc.phone, modulo=len(cfg.api_credentials) * limit)
+    if bucket is None:
+        return None
+    return min(bucket // limit, len(cfg.api_credentials) - 1)
+
+
+def _proxy_index_for_account(acc: AccountRow) -> Optional[int]:
+    cfg = load_config()
+    if not cfg.proxies:
+        return None
+    if acc.proxy_index is not None:
+        return acc.proxy_index
+    return _stable_index(acc.admin_id, acc.phone, modulo=len(cfg.proxies))
+
+
+def _global_broadcast_semaphore() -> asyncio.Semaphore:
+    global _global_broadcast_sem, _global_broadcast_sem_limit
+    limit = load_config().broadcast_global_concurrency
+    if _global_broadcast_sem is None or _global_broadcast_sem_limit != limit:
+        _global_broadcast_sem = asyncio.Semaphore(limit)
+        _global_broadcast_sem_limit = limit
+    return _global_broadcast_sem
+
+
+def _assignment_for_new_account(admin_id: int, phone: str) -> tuple[Optional[int], Optional[int]]:
+    cfg = load_config()
+    api_index = None
+    if cfg.api_credentials:
+        existing_count = get_account_count()
+        api_index = min(existing_count // max(1, cfg.api_account_limit), len(cfg.api_credentials) - 1)
+    proxy_index = _stable_index(admin_id, phone, modulo=len(cfg.proxies)) if cfg.proxies else None
+    return api_index, proxy_index
+
+
+def _client_from_session(session_string: str, preset_key: str, acc: Optional[AccountRow] = None) -> TelegramClient:
     cfg = load_config()
     preset = get_preset(preset_key)
+    credential = cfg.api_credential_for_index(_api_index_for_account(acc) if acc else None)
+    proxy = cfg.proxy_for_index(_proxy_index_for_account(acc) if acc else None)
     return TelegramClient(
-        StringSession(session_string), cfg.api_id, cfg.api_hash,
+        StringSession(session_string), credential.api_id, credential.api_hash,
         device_model=preset.device_model, system_version=preset.system_version,
         app_version=preset.app_version, lang_code=preset.lang_code,
         system_lang_code=preset.system_lang_code,
+        proxy=proxy.to_telethon() if proxy else None,
     )
 
 
 def _new_client(preset_key: str = "random"):
     cfg = load_config()
     preset = get_preset(preset_key)
+    credential = cfg.api_credential_for_index(None)
+    proxy = cfg.proxy_for_index(None)
     client = TelegramClient(
-        StringSession(), cfg.api_id, cfg.api_hash,
+        StringSession(), credential.api_id, credential.api_hash,
         device_model=preset.device_model, system_version=preset.system_version,
         app_version=preset.app_version, lang_code=preset.lang_code,
         system_lang_code=preset.system_lang_code,
+        proxy=proxy.to_telethon() if proxy else None,
     )
     return client, preset
 
@@ -372,6 +431,54 @@ def _is_owner(user_id: int) -> bool:
     return user_id in _owner_ids()
 
 
+def _owner_error_alert_cooldown() -> float:
+    raw = os.getenv("OWNER_ERROR_ALERT_COOLDOWN_SECONDS", "600")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 600.0
+
+
+def _runtime_error_alert_key(context: str, exc: BaseException) -> str:
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{context}|{type(exc).__name__}|{detail[:160]}"
+
+
+def _should_send_owner_error_alert(key: str, now: float) -> bool:
+    cooldown = _owner_error_alert_cooldown()
+    last_sent = _owner_error_alerts.get(key)
+    if last_sent is not None and now - last_sent < cooldown:
+        return False
+    _owner_error_alerts[key] = now
+    return True
+
+
+async def _notify_owners(bot: Bot, text: str) -> None:
+    for owner_id in _owner_ids():
+        try:
+            await bot.send_message(owner_id, text)
+        except Exception:
+            log.exception("Failed to send owner runtime error alert to %s", owner_id)
+
+
+async def _alert_runtime_error(bot: Bot, context: str, exc: BaseException) -> None:
+    import time
+
+    key = _runtime_error_alert_key(context, exc)
+    if not _should_send_owner_error_alert(key, time.monotonic()):
+        return
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else "-"
+    if len(detail) > 500:
+        detail = detail[:500] + "..."
+    await _notify_owners(
+        bot,
+        "Runtime error\n"
+        f"Context: {context}\n"
+        f"Error: {type(exc).__name__}\n"
+        f"Detail: {detail}",
+    )
+
+
 def _vip_label(user_id: int) -> str:
     if _is_owner(user_id):
         return "OWNER"
@@ -389,6 +496,43 @@ def _watermark_for_user(user_id: int) -> str:
     return os.getenv("WATERMARK", "")
 
 
+def _auto_health_check_interval_seconds() -> int:
+    raw = os.getenv("AUTO_HEALTH_CHECK_INTERVAL_SECONDS", "43200")
+    try:
+        return max(3600, int(raw))
+    except ValueError:
+        return 43200
+
+
+async def _check_account_health(bot: Bot, admin_id: int, acc: AccountRow) -> None:
+    client = _client_from_session(acc.session_string, acc.device_preset, acc)
+    try:
+        await client.connect()
+        await client.get_me()
+    except Exception as exc:
+        await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+
+
+async def _run_auto_health_check_once(bot: Bot) -> None:
+    for admin_id in get_admin_ids():
+        for acc in get_accounts(admin_id):
+            await _check_account_health(bot, admin_id, acc)
+            await asyncio.sleep(2)
+
+
+async def _auto_health_check_loop(bot: Bot) -> None:
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _run_auto_health_check_once(bot)
+        except Exception as exc:
+            await _alert_runtime_error(bot, "auto health check scheduler", exc)
+        await asyncio.sleep(_auto_health_check_interval_seconds())
+
+
 def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
     lang = get_lang(uid) if uid else "id"
     labels = _MENU_LABELS.get(lang, _MENU_LABELS["id"])
@@ -398,7 +542,6 @@ def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
             [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
             [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
-            [KeyboardButton(text=labels[8])],
         ],
         resize_keyboard=True,
     )
@@ -407,73 +550,63 @@ def _main_kb(uid: int = 0) -> ReplyKeyboardMarkup:
 _MENU_LABELS = {
     "id": [
         "➕ Tambah Akun", "👤 Akun Saya",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Kelola Text", "👥 Manage Group",
-        "🗑 Hapus/Logout", "🔄 Transfer",
-        "🌐 Bahasa",
+        "📣 Broadcast", "💬 Kelola Text",
+        "👥 Manage Group", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
     ],
     "en": [
         "➕ Add Account", "👤 My Accounts",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 Remove/Logout", "🔄 Transfer",
-        "🌐 Language",
+        "📣 Broadcast", "💬 Manage Text",
+        "👥 Manage Group", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Language",
     ],
     "ms": [
         "➕ Tambah Akaun", "👤 Akaun Saya",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Kelola Text", "👥 Manage Group",
-        "🗑 Hapus/Logout", "🔄 Transfer",
-        "🌐 Bahasa",
+        "📣 Broadcast", "💬 Kelola Text",
+        "👥 Manage Group", "🗑 Hapus/Logout",
+        "🔄 Transfer", "🌐 Bahasa",
     ],
     "th": [
         "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 ลบ/Logout", "🔄 โอนข้อมูล",
-        "🌐 ภาษา",
+        "📣 Broadcast", "💬 Manage Text",
+        "👥 Manage Group", "🗑 ลบ/Logout",
+        "🔄 โอนข้อมูล", "🌐 ภาษา",
     ],
     "vi": [
         "➕ Thêm TK", "👤 Tài khoản",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 Xóa/Logout", "🔄 Chuyển",
-        "🌐 Ngôn ngữ",
+        "📣 Broadcast", "💬 Manage Text",
+        "👥 Manage Group", "🗑 Xóa/Logout",
+        "🔄 Chuyển", "🌐 Ngôn ngữ",
     ],
     "zh": [
         "➕ 添加账号", "👤 我的账号",
-        "💚 健康检查", "📣 广播",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 删除/登出", "🔄 转移",
-        "🌐 语言",
+        "📣 广播", "💬 Manage Text",
+        "👥 Manage Group", "🗑 删除/登出",
+        "🔄 转移", "🌐 语言",
     ],
     "ja": [
         "➕ アカウント追加", "👤 マイアカウント",
-        "💚 ヘルスチェック", "📣 ブロードキャスト",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 削除/ログアウト", "🔄 転送",
-        "🌐 言語",
+        "📣 ブロードキャスト", "💬 Manage Text",
+        "👥 Manage Group", "🗑 削除/ログアウト",
+        "🔄 転送", "🌐 言語",
     ],
     "ko": [
         "➕ 계정 추가", "👤 내 계정",
-        "💚 상태 확인", "📣 브로드캐스트",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 삭제/로그아웃", "🔄 전송",
-        "🌐 언어",
+        "📣 브로드캐스트", "💬 Manage Text",
+        "👥 Manage Group", "🗑 삭제/로그아웃",
+        "🔄 전송", "🌐 언어",
     ],
     "hi": [
         "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 हटाएं/Logout", "🔄 ट्रांसफर",
-        "🌐 भाषा",
+        "📣 Broadcast", "💬 Manage Text",
+        "👥 Manage Group", "🗑 हटाएं/Logout",
+        "🔄 ट्रांसफर", "🌐 भाषा",
     ],
     "fil": [
         "➕ Dagdag Account", "👤 Mga Account",
-        "💚 Health Check", "📣 Broadcast",
-        "💬 Manage Text", "👥 Manage Group",
-        "🗑 Remove/Logout", "🔄 Transfer",
-        "🌐 Wika",
+        "📣 Broadcast", "💬 Manage Text",
+        "👥 Manage Group", "🗑 Remove/Logout",
+        "🔄 Transfer", "🌐 Wika",
     ],
 }
 
@@ -483,8 +616,8 @@ def _get_menu_action(text: str) -> str | None:
     for labels in _MENU_LABELS.values():
         if text in labels:
             idx = labels.index(text)
-            return ["add", "accounts", "health", "broadcast",
-                    "saved", "lists", "cleanup", "transfer", "lang"][idx]
+            return ["add", "accounts", "broadcast", "saved",
+                    "lists", "cleanup", "transfer", "lang"][idx]
     return None
 
 
@@ -864,7 +997,7 @@ async def cb_lo(cq: CallbackQuery) -> None:
     uid = cq.from_user.id
     acc = find_account(uid, cq.data[3:])
     if acc:
-        client = _client_from_session(acc.session_string, acc.device_preset)
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
             await client.log_out()
@@ -914,7 +1047,7 @@ async def cb_otp(cq: CallbackQuery) -> None:
     if not acc:
         await cq.message.edit_text("Not found.")
         return
-    client = _client_from_session(acc.session_string, acc.device_preset)
+    client = _client_from_session(acc.session_string, acc.device_preset, acc)
     try:
         await client.connect()
         from telethon.tl.types import InputPeerUser
@@ -933,6 +1066,7 @@ async def cb_otp(cq: CallbackQuery) -> None:
             await cq.message.edit_text(
                 f"📨 OTP [{acc.alias}]:\n\n" + "\n".join(codes))
     except Exception as e:
+        await _alert_runtime_error(cq.message.bot, "otp lookup", e)
         await cq.message.edit_text(f"[{acc.alias}] Error: {type(e).__name__}")
     finally:
         if client.is_connected():
@@ -1023,80 +1157,113 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         round_failed = []
         target_attempt = 0
         total_targets = len(accounts) * len(bl.targets)
+        target_attempt_lock = asyncio.Lock()
+        round_success_lock = asyncio.Lock()
+        per_admin_sem = asyncio.Semaphore(max(1, load_config().broadcast_per_admin_concurrency))
+        global_sem = _global_broadcast_semaphore()
 
-        for acc in accounts:
+        async def maybe_delay_after_target() -> None:
+            nonlocal target_attempt
+            async with target_attempt_lock:
+                target_attempt += 1
+                should_delay = (
+                    _state.get(uid, {}).get("action") == "broadcasting"
+                    and target_attempt < total_targets
+                    and group_delay_max > 0
+                )
+            if should_delay:
+                await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
+
+        async def append_success(line: str) -> None:
+            async with round_success_lock:
+                round_success.append(line)
+
+        async def append_failed(line: str) -> None:
+            async with round_success_lock:
+                round_failed.append(line)
+
+        async def run_account(acc: AccountRow) -> None:
             if _state.get(uid, {}).get("action") != "broadcasting":
-                break
-            acc_success = []
-            acc_failed = []
-            client = _client_from_session(acc.session_string, acc.device_preset)
-            try:
-                await client.connect()
-                await client.get_me()
-                for target in bl.targets:
-                    if _state.get(uid, {}).get("action") != "broadcasting":
-                        break
+                return
+            async with per_admin_sem:
+                async with global_sem:
+                    acc_success = []
+                    acc_failed = []
+                    client = None
                     try:
-                        entities = await _broadcast_entities_for_target(client, target)
-                        sent_count = 0
-                        for entity in entities:
-                            text_to_send = message_text_for_send()
-                            if has_media and media_bytes:
-                                await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
-                            else:
-                                await client.send_message(entity, text_to_send, parse_mode="html")
-                            sent_count += 1
-                        success_line = f"{acc.alias} -> {target}"
-                        if sent_count > 1:
-                            success_line += f" ({sent_count} chats)"
-                        round_success.append(success_line)
-                        acc_success.append(success_line)
-                    except (ChatWriteForbiddenError, UserBannedInChannelError):
-                        failed_line = f"{acc.alias} -> {target}: Blocked"
-                        round_failed.append(failed_line)
+                        client = _client_from_session(acc.session_string, acc.device_preset, acc)
+                        await client.connect()
+                        await client.get_me()
+                        for target in bl.targets:
+                            if _state.get(uid, {}).get("action") != "broadcasting":
+                                break
+                            try:
+                                entities = await _broadcast_entities_for_target(client, target)
+                                sent_count = 0
+                                for entity in entities:
+                                    text_to_send = message_text_for_send()
+                                    if has_media and media_bytes:
+                                        await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
+                                    else:
+                                        await client.send_message(entity, text_to_send, parse_mode="html")
+                                    sent_count += 1
+                                success_line = f"{acc.alias} -> {target}"
+                                if sent_count > 1:
+                                    success_line += f" ({sent_count} chats)"
+                                await append_success(success_line)
+                                acc_success.append(success_line)
+                            except (ChatWriteForbiddenError, UserBannedInChannelError):
+                                failed_line = f"{acc.alias} -> {target}: Blocked"
+                                await append_failed(failed_line)
+                                acc_failed.append(failed_line)
+                            except SlowModeWaitError as sme:
+                                failed_line = f"{acc.alias} -> {target}: SlowMode {sme.seconds}s"
+                                await append_failed(failed_line)
+                                acc_failed.append(failed_line)
+                            except FloodWaitError as fw:
+                                failed_line = f"{acc.alias} -> {target}: Flood {fw.seconds}s"
+                                await append_failed(failed_line)
+                                acc_failed.append(failed_line)
+                                await asyncio.sleep(fw.seconds)
+                            except (OSError, TimeoutError, ConnectionError) as ex:
+                                failed_line = f"{acc.alias} -> {target}: Proxy/Network {type(ex).__name__}"
+                                await append_failed(failed_line)
+                                acc_failed.append(failed_line)
+                            except Exception as ex:
+                                failed_line = f"{acc.alias} -> {target}: {type(ex).__name__}"
+                                await append_failed(failed_line)
+                                acc_failed.append(failed_line)
+                            await maybe_delay_after_target()
+                    except (OSError, TimeoutError, ConnectionError) as ex:
+                        failed_line = f"{acc.alias}: Proxy/Network {type(ex).__name__}"
+                        await append_failed(failed_line)
                         acc_failed.append(failed_line)
-                    except SlowModeWaitError as sme:
-                        failed_line = f"{acc.alias} -> {target}: SlowMode {sme.seconds}s"
-                        round_failed.append(failed_line)
-                        acc_failed.append(failed_line)
-                    except FloodWaitError as fw:
-                        failed_line = f"{acc.alias} -> {target}: Flood {fw.seconds}s"
-                        round_failed.append(failed_line)
-                        acc_failed.append(failed_line)
-                        await asyncio.sleep(fw.seconds)
+                        await _alert_runtime_error(bot, "broadcast account runtime", ex)
                     except Exception as ex:
-                        failed_line = f"{acc.alias} -> {target}: {type(ex).__name__}"
-                        round_failed.append(failed_line)
+                        failed_line = f"{acc.alias}: {type(ex).__name__}"
+                        await append_failed(failed_line)
                         acc_failed.append(failed_line)
-                    target_attempt += 1
-                    if (
-                        _state.get(uid, {}).get("action") == "broadcasting"
-                        and target_attempt < total_targets
-                        and group_delay_max > 0
-                    ):
-                        await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
-            except Exception as ex:
-                failed_line = f"{acc.alias}: {type(ex).__name__}"
-                round_failed.append(failed_line)
-                acc_failed.append(failed_line)
-            finally:
-                if client.is_connected():
-                    if log_dest and _state.get(uid, {}).get("action") == "broadcasting":
-                        now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                        log_lines = [
-                            f"Round {round_num} | {now}",
-                            f"Account: {acc.alias}",
-                            f"Sent: {len(acc_success)}",
-                        ]
-                        if acc_success:
-                            log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
-                        if acc_failed:
-                            log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
-                        try:
-                            await client.send_message(log_dest, "\n".join(log_lines))
-                        except Exception:
-                            pass
-                    await client.disconnect()
+                        await _alert_runtime_error(bot, "broadcast account runtime", ex)
+                    finally:
+                        if client and client.is_connected():
+                            if log_dest and _state.get(uid, {}).get("action") == "broadcasting":
+                                now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                                log_lines = [
+                                    f"Round {round_num} | {now}",
+                                    f"Account: {acc.alias}",
+                                    f"Sent: {len(acc_success)}",
+                                ]
+                                if acc_success:
+                                    log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
+                                if acc_failed:
+                                    log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
+                                try:
+                                    await client.send_message(log_dest, "\n".join(log_lines))
+                                except Exception:
+                                    pass
+                            await client.disconnect()
+
+        await asyncio.gather(*(run_account(acc) for acc in accounts))
 
         # Log summary per round
         if _state.get(uid, {}).get("action") == "broadcasting":
@@ -1142,24 +1309,6 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
                 label += f" (@{a.username})"
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"acc:{a.alias}")])
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    elif action == "health":
-        if not accounts:
-            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))
-            return
-        await _reply(message, uid, "Checking...")
-        lines = []
-        for acc in accounts:
-            client = _client_from_session(acc.session_string, acc.device_preset)
-            try:
-                await client.connect()
-                me = await client.get_me()
-                lines.append(f"[{acc.alias}] OK — {me.first_name}")
-            except Exception as e:
-                lines.append(f"[{acc.alias}] FAIL — {type(e).__name__}")
-            finally:
-                if client.is_connected():
-                    await client.disconnect()
-        await _reply(message, uid, "\n".join(lines), reply_markup=_main_kb(uid))
     elif action == "broadcast":
         lists = get_lists(uid)
         if not lists:
@@ -1335,17 +1484,17 @@ async def handle_text(message: Message) -> None:
         await message.answer(
             f"Group list: {text}\n\n"
             "Paste daftar group/link. Bisa campur nama + @username/link invite/addlist.\n"
-            "Kirim 'done' kalau sudah selesai:"
+            "Kirim 'done' atau 'selesai' kalau sudah selesai:"
         )
 
     elif action == "createlist_targets":
-        if text.lower() == "done":
+        if text.lower() in {"done", "selesai"}:
             targets = state["targets"]
             if not targets:
-                await message.answer("No targets added. Cancelled.", reply_markup=_back_kb())
+                await message.answer("No targets added. Cancelled.", reply_markup=_main_kb(uid))
             else:
                 add_list(BroadcastListRow(admin_id=uid, name=state["name"], targets=targets))
-                await message.answer(f"List '{state['name']}' created ({len(targets)} targets).", reply_markup=_back_kb())
+                await message.answer(f"List '{state['name']}' created ({len(targets)} targets).", reply_markup=_main_kb(uid))
             _state.pop(uid, None)
         else:
             new_targets = _extract_group_targets(text)
@@ -1364,7 +1513,7 @@ async def handle_text(message: Message) -> None:
             await message.answer(
                 f"Added {len(added)} target:\n{preview}\n\n"
                 f"Total: {len(state['targets'])}\n"
-                "Kirim target lain atau 'done':"
+                "Kirim target lain atau 'done' / 'selesai':"
             )
 
     # --- List edit: add targets ---
@@ -1425,7 +1574,7 @@ async def handle_text(message: Message) -> None:
         parts = text.split(maxsplit=1)
         first = parts[0]
         last = parts[1] if len(parts) > 1 else ""
-        client = _client_from_session(acc.session_string, acc.device_preset)
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
             await client.get_me()
@@ -1446,7 +1595,7 @@ async def handle_text(message: Message) -> None:
         if not acc:
             await message.answer("Not found.", reply_markup=_back_kb())
             return
-        client = _client_from_session(acc.session_string, acc.device_preset)
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
             await client.get_me()
@@ -1467,7 +1616,7 @@ async def handle_text(message: Message) -> None:
         if not acc:
             await message.answer("Not found.", reply_markup=_back_kb())
             return
-        client = _client_from_session(acc.session_string, acc.device_preset)
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
             await client.get_me()
@@ -1628,7 +1777,7 @@ async def handle_text(message: Message) -> None:
             await message.answer("Not found.", reply_markup=_main_kb())
             return
         if text == "Logout (revoke)":
-            client = _client_from_session(acc.session_string, acc.device_preset)
+            client = _client_from_session(acc.session_string, acc.device_preset, acc)
             try:
                 await client.connect()
                 await client.log_out()
@@ -1684,6 +1833,7 @@ async def _finish_login(message: Message, admin_id: int) -> None:
     session_str = client.session.save()
     await client.disconnect()
 
+    api_credential_index, proxy_index = _assignment_for_new_account(admin_id, state["phone"])
     acc = AccountRow(
         admin_id=admin_id,
         phone=state["phone"],
@@ -1695,6 +1845,8 @@ async def _finish_login(message: Message, admin_id: int) -> None:
         user_id=me.id,
         is_2fa=state.get("is_2fa", False),
         device_preset=state["preset"].key,
+        api_credential_index=api_credential_index,
+        proxy_index=proxy_index,
     )
     add_account(acc)
     await message.answer(
@@ -1714,5 +1866,6 @@ async def run_bot() -> None:
     bot = Bot(token=token)
     dp = Dispatcher()
     dp.include_router(router)
+    asyncio.create_task(_auto_health_check_loop(bot))
     log.info("Bot starting...")
     await dp.start_polling(bot)

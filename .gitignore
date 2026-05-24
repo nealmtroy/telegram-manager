@@ -18,6 +18,8 @@ admins/
 credentials.json
 config.ini
 !config.example.ini
+proxies.txt
+*.proxies.txt
 
 # ---- Logs -------------------------------------------------------------------
 logs/

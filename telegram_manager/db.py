@@ -25,6 +25,29 @@ def _get_client() -> Client:
     return create_client(url, key)
 
 
+_ACCOUNT_OPTIONAL_COLUMNS: Optional[set[str]] = None
+
+
+def _account_optional_columns() -> set[str]:
+    global _ACCOUNT_OPTIONAL_COLUMNS
+    if _ACCOUNT_OPTIONAL_COLUMNS is not None:
+        return _ACCOUNT_OPTIONAL_COLUMNS
+    db = _get_client()
+    columns: set[str] = set()
+    try:
+        db.table("accounts").select("api_credential_index").limit(1).execute()
+        columns.add("api_credential_index")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("proxy_index").limit(1).execute()
+        columns.add("proxy_index")
+    except Exception:
+        pass
+    _ACCOUNT_OPTIONAL_COLUMNS = columns
+    return _ACCOUNT_OPTIONAL_COLUMNS
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -40,6 +63,8 @@ class AccountRow:
     user_id: Optional[int] = None
     is_2fa: bool = False
     device_preset: str = "random"
+    api_credential_index: Optional[int] = None
+    proxy_index: Optional[int] = None
 
     @property
     def display_name(self) -> str:
@@ -76,6 +101,12 @@ def is_registered_admin(user_id: int) -> bool:
     return len(r.data) > 0
 
 
+def get_admin_ids() -> List[int]:
+    db = _get_client()
+    r = db.table("admins").select("user_id").execute()
+    return [int(row["user_id"]) for row in r.data if row.get("user_id") is not None]
+
+
 def is_vip_admin(user_id: int) -> bool:
     db = _get_client()
     r = db.table("admins").select("is_vip").eq("user_id", user_id).execute()
@@ -105,7 +136,7 @@ def is_managed_account(user_id: int) -> bool:
 # ---------------------------------------------------------------------------
 def add_account(acc: AccountRow) -> None:
     db = _get_client()
-    db.table("accounts").upsert({
+    payload = {
         "admin_id": acc.admin_id,
         "phone": acc.phone,
         "alias": acc.alias,
@@ -116,7 +147,19 @@ def add_account(acc: AccountRow) -> None:
         "is_2fa": acc.is_2fa,
         "device_preset": acc.device_preset,
         "session_string": acc.session_string,
-    }, on_conflict="admin_id,phone").execute()
+    }
+    optional_columns = _account_optional_columns()
+    if "api_credential_index" in optional_columns:
+        payload["api_credential_index"] = acc.api_credential_index
+    if "proxy_index" in optional_columns:
+        payload["proxy_index"] = acc.proxy_index
+    db.table("accounts").upsert(payload, on_conflict="admin_id,phone").execute()
+
+
+def get_account_count() -> int:
+    db = _get_client()
+    r = db.table("accounts").select("phone", count="exact").limit(1).execute()
+    return r.count or 0
 
 
 def get_accounts(admin_id: int) -> List[AccountRow]:
@@ -133,6 +176,8 @@ def get_accounts(admin_id: int) -> List[AccountRow]:
         user_id=row.get("user_id"),
         is_2fa=row.get("is_2fa", False),
         device_preset=row.get("device_preset", "random"),
+        api_credential_index=row.get("api_credential_index"),
+        proxy_index=row.get("proxy_index"),
     ) for row in r.data]
 
 
@@ -244,4 +289,4 @@ def get_admin_lang(user_id: int) -> str:
     r = db.table("admins").select("lang").eq("user_id", user_id).execute()
     if r.data and r.data[0].get("lang"):
         return r.data[0]["lang"]
-    return "en"
+    return "id"
