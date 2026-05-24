@@ -7,6 +7,7 @@ Telethon>=1.36.0,<2.0.0
 
 # Proxy support used by Telethon for HTTP/SOCKS proxies
 PySocks>=1.7.1
+python-socks>=2.4.0
 
 # Pretty terminal output (tables, colors, panels)
 rich>=13.7.0
