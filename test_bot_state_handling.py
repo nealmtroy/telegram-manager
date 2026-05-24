@@ -133,6 +133,7 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_without_accounts_shows_welcome_and_add_account_menu_without_login_state(self):
         uid = 1006
         message = FakeMessage(uid, "/start")
+        message.from_user = SimpleNamespace(id=uid, username="neal", first_name="Neal", last_name="Troy")
 
         with patch.object(bot, "is_managed_account", return_value=False), \
              patch.object(bot, "register_admin") as register_admin, \
@@ -141,11 +142,17 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "_vip_label", return_value="FREE"):
             await bot.cmd_start(message)
 
-        register_admin.assert_called_once_with(uid, "", "")
+        register_admin.assert_called_once_with(uid, "neal", "Neal")
         self.assertNotIn(uid, bot._state)
         self.assertEqual(len(message.answers), 1)
         text, kwargs = message.answers[0]
-        self.assertIn("Selamat datang", text)
+        self.assertIn("Hi Neal Troy", text)
+        self.assertIn("membantu kamu membuat dan mengelola userbot Telegram", text)
+        self.assertIn("Username: @neal", text)
+        self.assertIn(f"User ID: {uid}", text)
+        self.assertIn("First Name: Neal", text)
+        self.assertIn("Last Name: Troy", text)
+        self.assertIn("tekan tombol \"Tambah Akun\"", text)
         keyboard = kwargs["reply_markup"].keyboard
         labels = [button.text for row in keyboard for button in row]
         self.assertIn("➕ Tambah Akun", labels)
@@ -181,10 +188,52 @@ class BotStateHandlingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "get_saved_messages", return_value=saved):
             await bot._dispatch_menu(message, uid, "saved")
 
+        text = message.answers[0][0]
+        self.assertIn("Kelola Text", text)
+        self.assertIn("template pesan broadcast", text)
+        self.assertIn("Save Text", text)
         keyboard = message.answers[0][1]["reply_markup"].inline_keyboard
         callback_data = keyboard[0][0].callback_data
         self.assertLessEqual(len(callback_data.encode("utf-8")), 64)
         self.assertNotIn(long_name, callback_data)
+
+    async def test_broadcast_and_group_list_prompts_explain_their_purpose(self):
+        uid = 1009
+        message = FakeMessage(uid, "📣 Broadcast")
+        lists = [SimpleNamespace(name="Leads", targets=["@group"])]
+
+        with patch.object(bot, "get_accounts", return_value=[SimpleNamespace(alias="acc1")]), \
+             patch.object(bot, "get_lists", return_value=lists):
+            await bot._dispatch_menu(message, uid, "broadcast")
+
+        self.assertIn("Pilih daftar group tujuan broadcast", message.answers[0][0])
+        self.assertIn("Manage Group", message.answers[0][0])
+
+        group_message = FakeMessage(uid, "👥 Manage Group")
+        with patch.object(bot, "get_accounts", return_value=[SimpleNamespace(alias="acc1")]), \
+             patch.object(bot, "get_lists", return_value=lists):
+            await bot._dispatch_menu(group_message, uid, "lists")
+
+        self.assertIn("Manage Group", group_message.answers[0][0])
+        self.assertIn("daftar target group", group_message.answers[0][0])
+
+    async def test_english_welcome_copy_is_user_friendly(self):
+        uid = 1010
+        message = FakeMessage(uid, "/start")
+        message.from_user = SimpleNamespace(id=uid, username="neal", first_name="Neal", last_name="Troy")
+
+        with patch.object(bot, "is_managed_account", return_value=False), \
+             patch.object(bot, "register_admin"), \
+             patch.object(bot, "get_admin_lang", return_value="en"), \
+             patch.object(bot, "get_accounts", return_value=[]), \
+             patch.object(bot, "_vip_label", return_value="FREE"):
+            await bot.cmd_start(message)
+
+        text = message.answers[0][0]
+        self.assertIn("Hi Neal Troy", text)
+        self.assertIn("create and manage Telegram userbots", text)
+        self.assertIn("Username: @neal", text)
+        self.assertIn("press \"Add Account\"", text)
 
 
 if __name__ == "__main__":

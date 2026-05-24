@@ -533,6 +533,31 @@ async def _auto_health_check_loop(bot: Bot) -> None:
         await asyncio.sleep(_auto_health_check_interval_seconds())
 
 
+def _display_user_name(user) -> str:
+    parts = [getattr(user, "first_name", "") or "", getattr(user, "last_name", "") or ""]
+    name = " ".join(part for part in parts if part).strip()
+    return name or (f"@{user.username}" if getattr(user, "username", None) else str(user.id))
+
+
+def _profile_value(value) -> str:
+    return str(value) if value else "-"
+
+
+def _welcome_text(message: Message, uid: int, accounts: list, status: str) -> str:
+    user = message.from_user
+    return t(
+        "welcome_new" if not accounts else "main_menu",
+        uid,
+        n=len(accounts),
+        name=_display_user_name(user),
+        username=f"@{user.username}" if getattr(user, "username", None) else "-",
+        telegram_id=uid,
+        first_name=_profile_value(getattr(user, "first_name", "")),
+        last_name=_profile_value(getattr(user, "last_name", "")),
+        status=status,
+    )
+
+
 def _main_kb(uid: int = 0, has_accounts: bool = True) -> ReplyKeyboardMarkup:
     lang = get_lang(uid) if uid else "id"
     labels = _MENU_LABELS.get(lang, _MENU_LABELS["id"])
@@ -670,11 +695,12 @@ async def cmd_start(message: Message) -> None:
     set_lang(uid, lang)
     accounts = get_accounts(uid)
     _state.pop(uid, None)
+    status = _vip_label(uid)
     if not accounts:
-        await message.answer(f"Status: {_vip_label(uid)}\n\n{t('welcome_new', uid)}", reply_markup=_main_kb(uid, has_accounts=False))
+        await message.answer(_welcome_text(message, uid, accounts, status), reply_markup=_main_kb(uid, has_accounts=False))
         return
     await message.answer(
-        f"Status: {_vip_label(uid)}\n\n{t('main_menu', uid, n=len(accounts))}",
+        _welcome_text(message, uid, accounts, status),
         reply_markup=_main_kb(uid, has_accounts=True),
     )
 
@@ -1347,12 +1373,12 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         saved = get_saved_messages(uid)
         buttons = _saved_message_buttons(uid, "sv")
         buttons.append([InlineKeyboardButton(text="+ Save Text", callback_data="savetext")])
-        await _reply(message, uid, "Text tersimpan:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("saved_text_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "lists":
         lists = get_lists(uid)
         buttons = [[InlineKeyboardButton(text=f"{bl.name} ({len(bl.targets)})", callback_data=f"vl:{bl.name}")] for bl in lists] if lists else []
         buttons.append([InlineKeyboardButton(text="+ Create Group List", callback_data="createlist")])
-        await _reply(message, uid, "Group list:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await _reply(message, uid, t("group_list_menu", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == "cleanup":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid))

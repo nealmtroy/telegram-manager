@@ -15,8 +15,8 @@ LANGUAGES = {
 
 _STRINGS = {
     "welcome_new": {
-        "en": "Welcome! You need to login an account first.\n\nEnter phone number (e.g. +628123456789):",
-        "id": "Selamat datang! Kamu perlu login akun dulu.\n\nMasukkan nomor HP (contoh: +628123456789):",
+        "en": "Hi {name},\n\nI can help you create and manage Telegram userbots for broadcast, saved text templates, group lists, OTP checks, and account tools.\n\nUsername: {username}\nUser ID: {telegram_id}\nFirst Name: {first_name}\nLast Name: {last_name}\nStatus: {status}\nUserbot accounts: {n}\n\nTo create your first userbot, press \"Add Account\" and enter your Telegram phone number in international format, for example +628123456789.",
+        "id": "Hi {name},\n\nSaya bisa membantu kamu membuat dan mengelola userbot Telegram untuk broadcast, template text, daftar group, cek OTP, dan pengaturan akun.\n\nUsername: {username}\nUser ID: {telegram_id}\nFirst Name: {first_name}\nLast Name: {last_name}\nStatus: {status}\nAkun userbot: {n}\n\nUntuk membuat userbot baru, tekan tombol \"Tambah Akun\" lalu masukkan nomor Telegram dengan format internasional, contoh +628123456789.",
         "ms": "Selamat datang! Anda perlu login akaun dahulu.\n\nMasukkan nombor telefon (cth: +60123456789):",
         "th": "ยินดีต้อนรับ! คุณต้องเข้าสู่ระบบก่อน\n\nกรอกหมายเลขโทรศัพท์ (เช่น +66812345678):",
         "vi": "Chào mừng! Bạn cần đăng nhập tài khoản trước.\n\nNhập số điện thoại (VD: +84912345678):",
@@ -27,8 +27,8 @@ _STRINGS = {
         "fil": "Maligayang pagdating! Mag-login muna ng account.\n\nIlagay ang phone number (hal: +639123456789):",
     },
     "main_menu": {
-        "en": "Telegram Manager ({n} accounts)",
-        "id": "Telegram Manager ({n} akun)",
+        "en": "Telegram Manager ({n} accounts)\n\nChoose a menu below to manage accounts, saved text templates, group lists, or broadcasts.",
+        "id": "Telegram Manager ({n} akun)\n\nPilih menu di bawah untuk mengelola akun, template text, daftar group, atau broadcast.",
         "ms": "Telegram Manager ({n} akaun)",
         "th": "Telegram Manager ({n} บัญชี)",
         "vi": "Telegram Manager ({n} tài khoản)",
@@ -39,8 +39,8 @@ _STRINGS = {
         "fil": "Telegram Manager ({n} account)",
     },
     "enter_phone": {
-        "en": "Enter phone number (e.g. +628123456789):",
-        "id": "Masukkan nomor HP (contoh: +628123456789):",
+        "en": "Create a userbot account\n\nEnter the Telegram phone number you want to connect. Use international format, for example +628123456789.",
+        "id": "Buat akun userbot\n\nMasukkan nomor Telegram yang mau dihubungkan. Gunakan format internasional, contoh +628123456789.",
         "ms": "Masukkan nombor telefon:",
         "th": "กรอกหมายเลขโทรศัพท์:",
         "vi": "Nhập số điện thoại:",
@@ -87,8 +87,8 @@ _STRINGS = {
         "fil": "Walang account.",
     },
     "pick_account": {
-        "en": "Pick account:",
-        "id": "Pilih akun:",
+        "en": "Choose a userbot account to view details, edit profile data, check OTP, or remove it.",
+        "id": "Pilih akun userbot untuk melihat detail, edit profil, cek OTP, atau menghapus akun.",
         "ms": "Pilih akaun:",
         "th": "เลือกบัญชี:",
         "vi": "Chọn tài khoản:",
@@ -99,8 +99,8 @@ _STRINGS = {
         "fil": "Pumili ng account:",
     },
     "broadcast_pick_list": {
-        "en": "Pick a list:",
-        "id": "Pilih list:",
+        "en": "Choose the group list you want to broadcast to. Group lists are managed from Manage Group; each list can contain usernames, links, invite links, or chat IDs.",
+        "id": "Pilih daftar group tujuan broadcast. Daftar ini dibuat dari Manage Group dan bisa berisi username, link, invite link, atau chat ID.",
         "ms": "Pilih senarai:",
         "th": "เลือกรายการ:",
         "vi": "Chọn danh sách:",
@@ -193,6 +193,14 @@ _STRINGS = {
         "ko": "언어를 선택하세요:",
         "hi": "अपनी भाषा चुनें:",
         "fil": "Piliin ang iyong wika:",
+    },
+    "saved_text_menu": {
+        "en": "Manage Text\n\nSave reusable broadcast message templates here. Press \"+ Save Text\" to create a new template, or choose an existing template to preview/delete it.",
+        "id": "Kelola Text\n\nSimpan template pesan broadcast yang bisa dipakai ulang di sini. Tekan \"+ Save Text\" untuk membuat template baru, atau pilih template yang sudah ada untuk preview/hapus.",
+    },
+    "group_list_menu": {
+        "en": "Manage Group\n\nCreate and edit target group lists for broadcasts. A list can contain @username, t.me links, private invite links, addlist links, or numeric chat IDs.",
+        "id": "Manage Group\n\nBuat dan kelola daftar target group untuk broadcast. List bisa berisi @username, link t.me, invite private, addlist, atau chat ID angka.",
     },
 }
 
