@@ -28,7 +28,6 @@ from telethon.errors import (
     ChannelPrivateError,
     ChatAdminRequiredError,
     ChatIdInvalidError,
-    ChatSendPlainTextForbiddenError,
     ChatWriteForbiddenError,
     FloodWaitError,
     InputUserDeactivatedError,
@@ -49,6 +48,10 @@ from telethon.errors import (
     UsernameInvalidError,
     UsernameNotOccupiedError,
 )
+try:
+    from telethon.errors import ChatSendPlainTextForbiddenError
+except ImportError:  # Older Telethon versions do not expose this class.
+    ChatSendPlainTextForbiddenError = ()
 from telethon.sessions import StringSession
 
 from .config import load_config
