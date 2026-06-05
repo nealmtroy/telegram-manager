@@ -441,6 +441,8 @@ async def _broadcast_entities_for_target(client: TelegramClient, target: str) ->
 
 
 def _categorize_broadcast_error(exc: BaseException) -> str:
+    if isinstance(exc, AuthKeyDuplicatedError):
+        return "Duplicated auth key/session IP conflict"
     if isinstance(exc, SlowModeWaitError):
         return f"SlowMode {exc.seconds}s"
     if isinstance(exc, FloodWaitError):
@@ -571,7 +573,7 @@ def _auto_health_check_interval_seconds() -> int:
 
 
 def _is_terminal_account_error(exc: BaseException) -> bool:
-    return isinstance(exc, (AuthKeyDuplicatedError, AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
+    return isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
 
 
 async def _remove_invalid_account(bot: Bot, admin_id: int, acc: AccountRow, reason: str) -> None:
