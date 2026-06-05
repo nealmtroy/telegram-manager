@@ -27,8 +27,8 @@ _STRINGS = {
         "fil": "Maligayang pagdating! Mag-login muna ng account.\n\nIlagay ang phone number (hal: +639123456789):",
     },
     "main_menu": {
-        "en": "🏠 <b>Telegram Manager</b>\n\n<blockquote>👥 <b>Active accounts:</b> {n}\n📣 <b>Broadcast:</b> send messages to saved group lists\n💬 <b>Manage Text:</b> save reusable message templates\n👥 <b>Manage Group:</b> organize broadcast targets</blockquote>\n\nChoose a menu below to manage your userbots.",
-        "id": "🏠 <b>Telegram Manager</b>\n\n<blockquote>👥 <b>Akun aktif:</b> {n}\n📣 <b>Broadcast:</b> kirim pesan ke daftar group\n💬 <b>Kelola Text:</b> simpan template pesan\n👥 <b>Manage Group:</b> atur target broadcast</blockquote>\n\nPilih menu di bawah untuk mengelola userbot kamu.",
+        "en": "🏠 <b>Telegram Manager</b>\n\n<blockquote>👥 <b>Active accounts:</b> {n}\n📣 <b>Broadcast:</b> send messages to saved group lists\n💬 <b>Manage Text:</b> save reusable message templates\n👥 <b>Manage Group:</b> organize broadcast targets\n🤖 <b>Auto Reply:</b> automatically reply to fresh private chats</blockquote>\n\nChoose a menu below to manage your userbots.",
+        "id": "🏠 <b>Telegram Manager</b>\n\n<blockquote>👥 <b>Akun aktif:</b> {n}\n📣 <b>Broadcast:</b> kirim pesan ke daftar group\n💬 <b>Kelola Text:</b> simpan template pesan\n👥 <b>Manage Group:</b> atur target broadcast\n🤖 <b>Auto Reply:</b> balas otomatis chat private baru</blockquote>\n\nPilih menu di bawah untuk mengelola userbot kamu.",
         "ms": "Telegram Manager ({n} akaun)",
         "th": "Telegram Manager ({n} บัญชี)",
         "vi": "Telegram Manager ({n} tài khoản)",
