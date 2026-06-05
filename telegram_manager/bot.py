@@ -22,37 +22,39 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from telethon import TelegramClient
-from telethon.errors import (
-    AuthKeyUnregisteredError,
-    ChannelInvalidError,
-    ChannelPrivateError,
-    ChatAdminRequiredError,
-    ChatIdInvalidError,
-    ChatWriteForbiddenError,
-    FloodWaitError,
-    InputUserDeactivatedError,
-    InviteHashExpiredError,
-    InviteHashInvalidError,
-    MessageActionForbiddenError,
-    PeerIdInvalidError,
-    PhoneCodeExpiredError,
-    PhoneCodeInvalidError,
-    SessionPasswordNeededError,
-    SessionRevokedError,
-    SlowModeWaitError,
-    UserBannedInChannelError,
-    UserDeactivatedBanError,
-    UserIsBlockedError,
-    UserPrivacyRestrictedError,
-    UserRestrictedError,
-    UsernameInvalidError,
-    UsernameNotOccupiedError,
-)
-try:
-    from telethon.errors import ChatSendPlainTextForbiddenError
-except ImportError:  # Older Telethon versions do not expose this class.
-    ChatSendPlainTextForbiddenError = ()
+from telethon import errors as telethon_errors
 from telethon.sessions import StringSession
+
+
+class _MissingTelethonError(Exception):
+    """Fallback for Telethon error classes missing in older versions."""
+
+
+AuthKeyUnregisteredError = getattr(telethon_errors, "AuthKeyUnregisteredError", _MissingTelethonError)
+ChannelInvalidError = getattr(telethon_errors, "ChannelInvalidError", _MissingTelethonError)
+ChannelPrivateError = getattr(telethon_errors, "ChannelPrivateError", _MissingTelethonError)
+ChatAdminRequiredError = getattr(telethon_errors, "ChatAdminRequiredError", _MissingTelethonError)
+ChatIdInvalidError = getattr(telethon_errors, "ChatIdInvalidError", _MissingTelethonError)
+ChatSendPlainTextForbiddenError = getattr(telethon_errors, "ChatSendPlainTextForbiddenError", _MissingTelethonError)
+ChatWriteForbiddenError = getattr(telethon_errors, "ChatWriteForbiddenError", _MissingTelethonError)
+FloodWaitError = getattr(telethon_errors, "FloodWaitError", _MissingTelethonError)
+InputUserDeactivatedError = getattr(telethon_errors, "InputUserDeactivatedError", _MissingTelethonError)
+InviteHashExpiredError = getattr(telethon_errors, "InviteHashExpiredError", _MissingTelethonError)
+InviteHashInvalidError = getattr(telethon_errors, "InviteHashInvalidError", _MissingTelethonError)
+MessageActionForbiddenError = getattr(telethon_errors, "MessageActionForbiddenError", _MissingTelethonError)
+PeerIdInvalidError = getattr(telethon_errors, "PeerIdInvalidError", _MissingTelethonError)
+PhoneCodeExpiredError = getattr(telethon_errors, "PhoneCodeExpiredError", _MissingTelethonError)
+PhoneCodeInvalidError = getattr(telethon_errors, "PhoneCodeInvalidError", _MissingTelethonError)
+SessionPasswordNeededError = getattr(telethon_errors, "SessionPasswordNeededError", _MissingTelethonError)
+SessionRevokedError = getattr(telethon_errors, "SessionRevokedError", _MissingTelethonError)
+SlowModeWaitError = getattr(telethon_errors, "SlowModeWaitError", _MissingTelethonError)
+UserBannedInChannelError = getattr(telethon_errors, "UserBannedInChannelError", _MissingTelethonError)
+UserDeactivatedBanError = getattr(telethon_errors, "UserDeactivatedBanError", _MissingTelethonError)
+UserIsBlockedError = getattr(telethon_errors, "UserIsBlockedError", _MissingTelethonError)
+UserPrivacyRestrictedError = getattr(telethon_errors, "UserPrivacyRestrictedError", _MissingTelethonError)
+UserRestrictedError = getattr(telethon_errors, "UserRestrictedError", _MissingTelethonError)
+UsernameInvalidError = getattr(telethon_errors, "UsernameInvalidError", _MissingTelethonError)
+UsernameNotOccupiedError = getattr(telethon_errors, "UsernameNotOccupiedError", _MissingTelethonError)
 
 from .config import load_config
 from .db import (
