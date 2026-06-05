@@ -788,6 +788,27 @@ def _accounts_kb(admin_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
+def _auto_reply_account_label(acc: AccountRow) -> str:
+    identity = f"@{acc.username}" if acc.username else acc.display_name
+    if not identity:
+        identity = acc.alias
+    if acc.user_id:
+        return f"{acc.user_id} {identity}"
+    return identity
+
+
+def _auto_reply_accounts_kb(admin_id: int) -> tuple[ReplyKeyboardMarkup, dict[str, str]]:
+    accounts = get_accounts(admin_id)
+    label_map: dict[str, str] = {}
+    buttons = []
+    for acc in accounts:
+        label = _auto_reply_account_label(acc)
+        label_map[label] = acc.alias
+        buttons.append([KeyboardButton(text=label)])
+    buttons.append([KeyboardButton(text="<< Menu")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True), label_map
+
+
 def _auto_reply_choice_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -1575,8 +1596,9 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
                 reply_markup=_auto_reply_choice_kb(),
             )
             return
-        _state[uid] = {"action": "auto_reply_pick"}
-        await _reply(message, uid, "Pilih akun untuk Auto Reply:", reply_markup=_accounts_kb(uid))
+        kb, account_map = _auto_reply_accounts_kb(uid)
+        _state[uid] = {"action": "auto_reply_pick", "account_map": account_map}
+        await _reply(message, uid, "Pilih akun untuk Auto Reply:", reply_markup=kb)
     elif action == "transfer":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
@@ -1883,9 +1905,12 @@ async def handle_text(message: Message) -> None:
 
     # --- Auto Reply ---
     elif action == "auto_reply_pick":
-        acc = find_account(uid, text)
+        alias = state.get("account_map", {}).get(text, text)
+        acc = find_account(uid, alias)
         if not acc:
-            await message.answer("Akun tidak ditemukan. Pilih alias dari keyboard:", reply_markup=_accounts_kb(uid))
+            kb, account_map = _auto_reply_accounts_kb(uid)
+            state["account_map"] = account_map
+            await message.answer("Akun tidak ditemukan. Pilih akun dari keyboard:", reply_markup=kb)
             return
         _state[uid] = {"action": "auto_reply_choose", "alias": acc.alias}
         status = "ON" if acc.auto_reply_enabled else "OFF"
