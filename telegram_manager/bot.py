@@ -30,6 +30,7 @@ class _MissingTelethonError(Exception):
     """Fallback for Telethon error classes missing in older versions."""
 
 
+AuthKeyDuplicatedError = getattr(telethon_errors, "AuthKeyDuplicatedError", _MissingTelethonError)
 AuthKeyUnregisteredError = getattr(telethon_errors, "AuthKeyUnregisteredError", _MissingTelethonError)
 ChannelInvalidError = getattr(telethon_errors, "ChannelInvalidError", _MissingTelethonError)
 ChannelPrivateError = getattr(telethon_errors, "ChannelPrivateError", _MissingTelethonError)
@@ -570,7 +571,7 @@ def _auto_health_check_interval_seconds() -> int:
 
 
 def _is_terminal_account_error(exc: BaseException) -> bool:
-    return isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
+    return isinstance(exc, (AuthKeyDuplicatedError, AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
 
 
 async def _remove_invalid_account(bot: Bot, admin_id: int, acc: AccountRow, reason: str) -> None:
