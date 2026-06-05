@@ -44,6 +44,16 @@ def _account_optional_columns() -> set[str]:
         columns.add("proxy_index")
     except Exception:
         pass
+    try:
+        db.table("accounts").select("auto_reply_enabled").limit(1).execute()
+        columns.add("auto_reply_enabled")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("auto_reply_text").limit(1).execute()
+        columns.add("auto_reply_text")
+    except Exception:
+        pass
     _ACCOUNT_OPTIONAL_COLUMNS = columns
     return _ACCOUNT_OPTIONAL_COLUMNS
 
@@ -65,6 +75,8 @@ class AccountRow:
     device_preset: str = "random"
     api_credential_index: Optional[int] = None
     proxy_index: Optional[int] = None
+    auto_reply_enabled: bool = False
+    auto_reply_text: str = ""
 
     @property
     def display_name(self) -> str:
@@ -153,6 +165,10 @@ def add_account(acc: AccountRow) -> None:
         payload["api_credential_index"] = acc.api_credential_index
     if "proxy_index" in optional_columns:
         payload["proxy_index"] = acc.proxy_index
+    if "auto_reply_enabled" in optional_columns:
+        payload["auto_reply_enabled"] = acc.auto_reply_enabled
+    if "auto_reply_text" in optional_columns:
+        payload["auto_reply_text"] = acc.auto_reply_text
     db.table("accounts").upsert(payload, on_conflict="admin_id,phone").execute()
 
 
@@ -178,7 +194,43 @@ def get_accounts(admin_id: int) -> List[AccountRow]:
         device_preset=row.get("device_preset", "random"),
         api_credential_index=row.get("api_credential_index"),
         proxy_index=row.get("proxy_index"),
+        auto_reply_enabled=row.get("auto_reply_enabled", False),
+        auto_reply_text=row.get("auto_reply_text", "") or "",
     ) for row in r.data]
+
+
+def get_all_accounts() -> List[AccountRow]:
+    db = _get_client()
+    r = db.table("accounts").select("*").order("alias").execute()
+    return [AccountRow(
+        admin_id=row["admin_id"],
+        phone=row["phone"],
+        alias=row["alias"],
+        session_string=row["session_string"],
+        first_name=row.get("first_name", ""),
+        last_name=row.get("last_name", ""),
+        username=row.get("username"),
+        user_id=row.get("user_id"),
+        is_2fa=row.get("is_2fa", False),
+        device_preset=row.get("device_preset", "random"),
+        api_credential_index=row.get("api_credential_index"),
+        proxy_index=row.get("proxy_index"),
+        auto_reply_enabled=row.get("auto_reply_enabled", False),
+        auto_reply_text=row.get("auto_reply_text", "") or "",
+    ) for row in r.data]
+
+
+def get_all_admins() -> dict[int, dict[str, str]]:
+    db = _get_client()
+    r = db.table("admins").select("user_id, username, first_name").execute()
+    return {
+        row["user_id"]: {
+            "username": row.get("username", "") or "",
+            "first_name": row.get("first_name", "") or "",
+        }
+        for row in r.data
+        if row.get("user_id") is not None
+    }
 
 
 def find_account(admin_id: int, alias_or_phone: str) -> Optional[AccountRow]:
@@ -202,6 +254,17 @@ def update_session(admin_id: int, phone: str, session_string: str) -> None:
     db = _get_client()
     db.table("accounts").update({
         "session_string": session_string,
+    }).eq("admin_id", admin_id).eq("phone", phone).execute()
+
+
+def update_auto_reply(admin_id: int, phone: str, enabled: bool, text: str = "") -> None:
+    optional_columns = _account_optional_columns()
+    if not {"auto_reply_enabled", "auto_reply_text"}.issubset(optional_columns):
+        raise RuntimeError("accounts.auto_reply_enabled and accounts.auto_reply_text columns are required")
+    db = _get_client()
+    db.table("accounts").update({
+        "auto_reply_enabled": enabled,
+        "auto_reply_text": text if enabled else "",
     }).eq("admin_id", admin_id).eq("phone", phone).execute()
 
 
@@ -251,6 +314,36 @@ def transfer_all(from_admin_id: int, to_admin_id: int) -> int:
     # Transfer lists
     r2 = db.table("broadcast_lists").update({"admin_id": to_admin_id}).eq("admin_id", from_admin_id).execute()
     return acc_count + len(r2.data)
+
+
+def resolve_admin_id(identifier: str) -> Optional[int]:
+    db = _get_client()
+    text = identifier.strip()
+    if not text:
+        return None
+
+    if text.lstrip("-").isdigit():
+        user_id = int(text)
+        if is_registered_admin(user_id):
+            return user_id
+        r = db.table("accounts").select("admin_id").eq("user_id", user_id).limit(1).execute()
+        if r.data:
+            return int(r.data[0]["admin_id"])
+        return None
+
+    username = text.lstrip("@").lower()
+    r = db.table("admins").select("user_id").ilike("username", username).limit(1).execute()
+    if r.data:
+        return int(r.data[0]["user_id"])
+
+    r = db.table("accounts").select("admin_id").eq("phone", text).limit(1).execute()
+    if r.data:
+        return int(r.data[0]["admin_id"])
+
+    r = db.table("accounts").select("admin_id").ilike("username", username).limit(1).execute()
+    if r.data:
+        return int(r.data[0]["admin_id"])
+    return None
 
 
 

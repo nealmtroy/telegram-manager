@@ -59,3 +59,7 @@ create table if not exists saved_messages (
     created_at timestamptz default now(),
     unique(admin_id, name)
 );
+
+-- Auto-reply columns (optional; detected at runtime via _account_optional_columns)
+alter table accounts add column if not exists auto_reply_enabled boolean default false;
+alter table accounts add column if not exists auto_reply_text text default '';

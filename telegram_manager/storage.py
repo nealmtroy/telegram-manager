@@ -50,6 +50,9 @@ class Account:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     last_login_at: Optional[str] = None
+    session_string: Optional[str] = None
+    api_credential_index: Optional[int] = None
+    proxy_index: Optional[int] = None
 
     @property
     def display_name(self) -> str:

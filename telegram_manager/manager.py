@@ -183,12 +183,24 @@ class TelegramManager:
                 except (NotAuthorizedError, AuthKeyUnregisteredError) as exc:
                     msg = f"Not authorized: {exc}"
                     log.warning("[%s] %s", acc.alias, msg)
+                    # Auto-remove invalid session
+                    try:
+                        self.store.remove(acc.phone, delete_session=True)
+                        log.warning("[%s] Auto-removed (session invalid)", acc.alias)
+                    except Exception:
+                        log.debug("Failed to auto-remove %s", acc.alias, exc_info=True)
                     if stop_on_error:
                         stop_event.set()
                     return BroadcastResult(account=acc, success=False, error=msg)
                 except UserDeactivatedBanError as exc:
                     msg = f"Account banned/deactivated: {exc}"
                     log.error("[%s] %s", acc.alias, msg)
+                    # Auto-remove banned account
+                    try:
+                        self.store.remove(acc.phone, delete_session=True)
+                        log.warning("[%s] Auto-removed (banned/deactivated)", acc.alias)
+                    except Exception:
+                        log.debug("Failed to auto-remove %s", acc.alias, exc_info=True)
                     if stop_on_error:
                         stop_event.set()
                     return BroadcastResult(account=acc, success=False, error=msg)
@@ -245,17 +257,39 @@ class TelegramManager:
     def _build_client(self, account: Account) -> TelegramClient:
         """Build a client whose params match the account's device preset."""
         preset = get_preset(account.device_preset)
-        session_path = str(self.store.session_path(account.session_name))
-        proxy = self.config.proxy.to_telethon()
-        if not self.config.has_own_api:
+
+        # Support StringSession for Supabase accounts
+        session_string = getattr(account, "session_string", None)
+        if session_string:
+            from telethon.sessions import StringSession
+            session = StringSession(session_string)
+        else:
+            session = str(self.store.session_path(account.session_name))
+
+        # Resolve credentials (supporting custom API index for Supabase)
+        api_id = self.config.api_id
+        api_hash = self.config.api_hash
+        if self.config.api_credentials:
+            idx = getattr(account, "api_credential_index", None)
+            credential = self.config.api_credential_for_index(idx)
+            api_id = credential.api_id
+            api_hash = credential.api_hash
+
+        if api_id is None or api_hash is None:
             raise TelegramManagerError(
                 f"[{account.alias}] TELEGRAM_API_ID/TELEGRAM_API_HASH "
                 "aren't set in .env."
             )
+
+        # Resolve proxy
+        proxy_idx = getattr(account, "proxy_index", None)
+        proxy_config = self.config.proxy_for_index(proxy_idx)
+        proxy = proxy_config.to_telethon() if proxy_config else None
+
         return TelegramClient(
-            session_path,
-            self.config.api_id,
-            self.config.api_hash,
+            session,
+            api_id,
+            api_hash,
             proxy=proxy,
             device_model=preset.device_model,
             system_version=preset.system_version,

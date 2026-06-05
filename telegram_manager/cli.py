@@ -34,6 +34,51 @@ console = Console()
 
 
 # ---------------------------------------------------------------------------
+# Error categorization for CLI broadcast
+# ---------------------------------------------------------------------------
+def _categorize_cli_error(exc: BaseException) -> str:
+    """Return a concise human-readable label for a Telethon/network error."""
+    try:
+        from telethon.errors import (
+            ChannelInvalidError,
+            ChannelPrivateError,
+            ChatAdminRequiredError,
+            ChatIdInvalidError,
+            ChatWriteForbiddenError,
+            FloodWaitError,
+            InviteHashExpiredError,
+            InviteHashInvalidError,
+            PeerIdInvalidError,
+            SlowModeWaitError,
+            UserBannedInChannelError,
+            UsernameInvalidError,
+            UsernameNotOccupiedError,
+        )
+        if isinstance(exc, SlowModeWaitError):
+            return f"SlowMode {exc.seconds}s"
+        if isinstance(exc, FloodWaitError):
+            return f"Flood {exc.seconds}s"
+        if isinstance(exc, UserBannedInChannelError):
+            return "Banned from group"
+        if isinstance(exc, ChatWriteForbiddenError):
+            return "Muted / can't write"
+        if isinstance(exc, ChatAdminRequiredError):
+            return "Admin-only chat"
+        if isinstance(exc, (ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, PeerIdInvalidError)):
+            return "Group inaccessible/private"
+        if isinstance(exc, (UsernameNotOccupiedError, UsernameInvalidError)):
+            return "Invalid username/link"
+        if isinstance(exc, (InviteHashExpiredError, InviteHashInvalidError)):
+            return "Invalid/expired invite link"
+    except ImportError:
+        pass
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return f"Network {type(exc).__name__}"
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+# ---------------------------------------------------------------------------
 # Main CLI class
 # ---------------------------------------------------------------------------
 class InteractiveCLI:
@@ -94,6 +139,7 @@ class InteractiveCLI:
             Choice(title="👤  Single-account action", value="single"),
             Choice(title="📣  Multi-account action", value="multi"),
             Choice(title="📝  Broadcast lists", value="lists"),
+            Choice(title="📥  Export chat history", value="export"),
             Choice(title="♻️   Re-login account", value="relogin"),
             Choice(title="🗑   Remove account", value="remove"),
             Choice(title="🚪  Logout (revoke session)", value="logout"),
@@ -266,6 +312,12 @@ class InteractiveCLI:
             name = await _ask_text(
                 "List name:", validate=lambda s: bool(s and s.strip())
             )
+            if len(name) > 100:
+                console.print(
+                    f"[red]Name too long ({len(name)}/100 characters). "
+                    "Please try again with a shorter name.[/red]"
+                )
+                return
             targets: List[str] = []
             console.print("[dim]Enter group/channel usernames or invite links. Empty to finish.[/dim]")
             while True:
@@ -695,7 +747,7 @@ class InteractiveCLI:
                     await client.send_message(entity, text)
                     results.append(f"{target}: sent")
                 except Exception as e:
-                    results.append(f"{target}: {type(e).__name__}")
+                    results.append(f"{target}: {_categorize_cli_error(e)}")
 
                 # Delay between targets
                 if i < len(bl.targets) - 1 and delay_mode != "none":
@@ -827,6 +879,457 @@ class InteractiveCLI:
             return []
         return [self.manager.get_account(p) for p in picked]
 
+    async def export_chat_history(self) -> None:
+        """Export chat history to .md or .txt from local or Supabase accounts."""
+        import os
+        import re
+        from datetime import datetime
+        from pathlib import Path
+
+        # 1. Determine account source
+        supabase_configured = bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"))
+
+        source = "local"
+        if supabase_configured:
+            source_choice = await questionary.select(
+                "Where do you want to load accounts from?",
+                choices=[
+                    Choice(title="📁  Local accounts (accounts.json)", value="local"),
+                    Choice(title="☁️  Supabase database (accounts table)", value="supabase"),
+                    Choice(title="Cancel", value="cancel"),
+                ]
+            ).ask_async()
+            if source_choice == "cancel" or source_choice is None:
+                return
+            source = source_choice
+
+        # 2. Load accounts based on source
+        selected_accounts = []
+        if source == "local":
+            accounts = self.manager.list_accounts()
+            if not accounts:
+                console.print("[dim]No local accounts registered yet.[/dim]")
+                return
+            choices = [
+                Choice(title=f"{a.alias}  ({a.phone})  {a.display_name}", value=a)
+                for a in accounts
+            ]
+        else:
+            # Sourced from Supabase!
+            from .db import get_all_accounts, get_all_admins
+            from .storage import Account
+
+            console.print("[yellow]Fetching accounts from Supabase...[/yellow]")
+            try:
+                supabase_rows = get_all_accounts()
+                admins_map = get_all_admins()
+            except Exception as e:
+                console.print(f"[red]Failed to connect to Supabase: {e}[/red]")
+                return
+
+            if not supabase_rows:
+                console.print("[dim]No accounts found in Supabase database.[/dim]")
+                return
+
+            # Map Supabase rows to local Account objects
+            choices = []
+            for a in supabase_rows:
+                # Resolve owner name
+                owner_info = admins_map.get(a.admin_id)
+                if owner_info:
+                    admin_label = f"Admin: @{owner_info['username']}" if owner_info['username'] else f"Admin ID: {a.admin_id}"
+                else:
+                    admin_label = f"Admin ID: {a.admin_id}"
+
+                local_acc = Account(
+                    phone=a.phone,
+                    alias=a.alias,
+                    session_name=a.phone.lstrip("+"),  # fallback
+                    first_name=a.first_name,
+                    last_name=a.last_name,
+                    username=a.username,
+                    user_id=a.user_id,
+                    is_2fa=a.is_2fa,
+                    device_preset=a.device_preset,
+                    session_string=a.session_string,
+                    api_credential_index=a.api_credential_index,
+                    proxy_index=a.proxy_index,
+                )
+                choices.append(Choice(
+                    title=f"{a.alias}  ({a.phone})  [{admin_label}] {a.display_name}",
+                    value=local_acc
+                ))
+
+        picked = await questionary.checkbox(
+            "Select accounts to export chat history from (space to toggle):",
+            choices=choices
+        ).ask_async()
+
+        if not picked:
+            return
+
+        selected_accounts = picked
+
+        # 3. Export Type Selection
+        export_type = await questionary.select(
+            "What type of chats do you want to export?",
+            choices=[
+                Choice(title="👥  Groups & Channels", value="groups"),
+                Choice(title="👤  Private Chats (People)", value="people"),
+                Choice(title="🤖  Bots", value="bots"),
+                Choice(title="📥  Saved Messages (me)", value="saved"),
+                Choice(title="🔍  Custom chat (Enter manually)", value="custom"),
+                Choice(title="✨  All Chats", value="all"),
+                Choice(title="Cancel", value="cancel"),
+            ]
+        ).ask_async()
+
+        if export_type == "cancel" or export_type is None:
+            return
+
+        target_chat_custom = None
+        if export_type == "custom":
+            target_chat_custom = await _ask_text(
+                "Enter target chat (username, @chat, user_id, or phone):",
+                validate=lambda s: bool(s and s.strip())
+            )
+        elif export_type == "saved":
+            target_chat_custom = "me"
+
+        # Determine if we should ask for specific chats (only for single account & dynamic types)
+        specific_targets = None
+        if len(selected_accounts) == 1 and export_type not in ("custom", "saved"):
+            scope_choice = await questionary.select(
+                "Do you want to export ALL chats of this type, or select specific ones?",
+                choices=[
+                    Choice(title="Export ALL matching chats", value="all"),
+                    Choice(title="Select specific ones from a list", value="specific"),
+                ]
+            ).ask_async()
+
+            if scope_choice == "specific":
+                acc = selected_accounts[0]
+                console.print(f"[yellow]Connecting to [{acc.alias}] to fetch chats...[/yellow]")
+
+                async def _fetch_filtered_dialogs(client, account):
+                    dialogs = await client.get_dialogs(limit=None)
+                    results = []
+                    me_user = await client.get_me()
+                    for d in dialogs:
+                        match = False
+                        if export_type == "groups" and (d.is_group or d.is_channel):
+                            match = True
+                        elif export_type == "people" and d.is_user and not getattr(d.entity, "bot", False) and d.entity.id != me_user.id:
+                            match = True
+                        elif export_type == "bots" and d.is_user and getattr(d.entity, "bot", False):
+                            match = True
+                        elif export_type == "all":
+                            match = True
+
+                        if match:
+                            chat_type = "group" if d.is_group else "channel" if d.is_channel else "user"
+                            results.append({
+                                "name": d.name,
+                                "id": d.id,
+                                "type": chat_type,
+                                "username": getattr(d.entity, "username", None),
+                            })
+                    return results
+
+                try:
+                    res = await self.manager.run_on_all(_fetch_filtered_dialogs, accounts=[acc])
+                    if not res or not res[0].success:
+                        console.print(f"[red]Failed to fetch dialogs: {res[0].error if res else 'Unknown error'}[/red]")
+                        return
+                    dialogs_data = res[0].value
+                    if not dialogs_data:
+                        console.print("[dim]No chats found matching that type.[/dim]")
+                        return
+
+                    dialog_choices = []
+                    for d in dialogs_data:
+                        label = f"{d['name']} ({d['type']})"
+                        if d['username']:
+                            label += f" @{d['username']}"
+                        label += f" (ID: {d['id']})"
+                        val = str(d['username']) if d['username'] else str(d['id'])
+                        dialog_choices.append(Choice(title=label, value=val))
+
+                    picked_chats = await questionary.checkbox(
+                        "Select the specific chats to export (space to toggle):",
+                        choices=dialog_choices
+                    ).ask_async()
+
+                    if not picked_chats:
+                        return
+                    specific_targets = picked_chats
+                except Exception as e:
+                    console.print(f"[red]Error fetching dialogs: {e}[/red]")
+                    return
+
+        # 4. Export format Selection
+        format_choice = await questionary.select(
+            "Select export format:",
+            choices=[
+                Choice(title="📝  Plain Text (.txt)", value="txt"),
+                Choice(title="markdown  Markdown (.md)", value="md"),
+                Choice(title="Cancel", value="cancel"),
+            ]
+        ).ask_async()
+
+        if format_choice == "cancel" or format_choice is None:
+            return
+
+        # 5. Limit selection
+        limit_str = await _ask_text(
+            "How many messages to export per chat? (default: 100, 0 for all):",
+            default="100",
+            validate=lambda s: s.isdigit()
+        )
+        limit = int(limit_str)
+        if limit == 0:
+            limit = None
+
+        # 5.1 Media selection
+        export_media = await questionary.confirm(
+            "Do you want to download and export media files (photos, videos, documents)?",
+            default=False
+        ).ask_async()
+
+        if export_media is None:
+            return
+
+        # 6. Execute Export action
+        console.print(f"\n[bold]Exporting messages...[/bold]")
+
+        exports_dir = Path("exports")
+        exports_dir.mkdir(parents=True, exist_ok=True)
+
+        async def _export_action(client, account):
+            me_user = await client.get_me()
+            targets_to_export = []
+
+            # Determine targets for this specific account
+            if target_chat_custom is not None:
+                # Resolve custom target
+                try:
+                    if isinstance(target_chat_custom, int):
+                        ent = await client.get_entity(target_chat_custom)
+                    elif str(target_chat_custom).lstrip("-").isdigit():
+                        ent = await client.get_entity(int(target_chat_custom))
+                    else:
+                        ent = await client.get_entity(target_chat_custom)
+                    targets_to_export.append(ent)
+                except Exception as e:
+                    if target_chat_custom == "me":
+                        targets_to_export.append(await client.get_entity("me"))
+                    else:
+                        raise ValueError(f"Could not resolve custom target '{target_chat_custom}': {e}")
+            elif specific_targets is not None:
+                # Resolve specific checked targets
+                for st in specific_targets:
+                    try:
+                        if isinstance(st, int) or str(st).lstrip("-").isdigit():
+                            targets_to_export.append(await client.get_entity(int(st)))
+                        else:
+                            targets_to_export.append(await client.get_entity(st))
+                    except Exception:
+                        pass
+            else:
+                # Dynamic fetch of all matching dialogs
+                dialogs = await client.get_dialogs(limit=None)
+                for d in dialogs:
+                    match = False
+                    if export_type == "groups" and (d.is_group or d.is_channel):
+                        match = True
+                    elif export_type == "people" and d.is_user and not getattr(d.entity, "bot", False) and d.entity.id != me_user.id:
+                        match = True
+                    elif export_type == "bots" and d.is_user and getattr(d.entity, "bot", False):
+                        match = True
+                    elif export_type == "all":
+                        match = True
+
+                    if match:
+                        targets_to_export.append(d.entity)
+
+            if not targets_to_export:
+                return "0 chats matched"
+
+            # Create account-specific directory
+            if getattr(account, "username", None):
+                username = account.username.lstrip("@")
+                acc_id = f"@{username}"
+            else:
+                acc_id = re.sub(r'[^a-zA-Z0-9_-]', '_', account.alias or account.phone)
+
+            acc_dir = exports_dir / acc_id
+            acc_dir.mkdir(parents=True, exist_ok=True)
+
+            media_dir = acc_dir / "media"
+            if export_media:
+                media_dir.mkdir(parents=True, exist_ok=True)
+
+            saved_count = 0
+            for resolved_entity in targets_to_export:
+                entity_title = getattr(resolved_entity, "title", None) or \
+                               f"{getattr(resolved_entity, 'first_name', '')} {getattr(resolved_entity, 'last_name', '')}".strip() or \
+                               getattr(resolved_entity, "username", None) or \
+                               str(getattr(resolved_entity, "id", "chat"))
+                entity_name = re.sub(r'[^a-zA-Z0-9_-]', '_', entity_title)
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{entity_name}_{timestamp}.{format_choice}"
+                file_path = acc_dir / filename
+
+                # Ensure connection is active before calling Telethon APIs
+                if not client.is_connected():
+                    console.print(f"[yellow]  ⚠️ Lost connection for {account.alias}. Attempting to reconnect...[/yellow]")
+                    try:
+                        await client.connect()
+                    except Exception as conn_err:
+                        console.print(f"[red]  ❌ Failed to reconnect: {conn_err}[/red]")
+                        break
+
+                # Fetch messages
+                messages = []
+                try:
+                    async for msg in client.iter_messages(resolved_entity, limit=limit):
+                        messages.append(msg)
+                except Exception as e:
+                    console.print(f"[yellow]  ⚠️ Failed to fetch messages for '{entity_title}': {e}[/yellow]")
+                    continue
+
+                if not messages:
+                    continue # Skip empty chats
+
+                messages.reverse()
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    if format_choice == "md":
+                        f.write(f"# Chat Export with {entity_title}\n")
+                        f.write(f"- **Account:** {account.alias} ({account.phone})\n")
+                        f.write(f"- **Exported At:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"- **Total Messages:** {len(messages)}\n\n")
+                        f.write("---\n\n")
+
+                        for m in messages:
+                            date_str = m.date.strftime("%Y-%m-%d %H:%M:%S")
+                            sender = "Unknown"
+                            sender_username = ""
+                            if m.sender:
+                                sender = getattr(m.sender, "title", None) or \
+                                         f"{getattr(m.sender, 'first_name', '')} {getattr(m.sender, 'last_name', '')}".strip() or \
+                                         getattr(m.sender, "username", None) or \
+                                         str(m.sender_id)
+                                if getattr(m.sender, "username", None):
+                                    sender_username = f" (@{m.sender.username})"
+
+                            # Download media if requested
+                            relative_media_path = None
+                            if export_media and m.media:
+                                ext = ""
+                                original_name = None
+                                if hasattr(m, "file") and m.file:
+                                    ext = m.file.ext or ""
+                                    original_name = m.file.name
+
+                                if original_name:
+                                    safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_name)
+                                    media_filename = f"{m.id}_{safe_name}"
+                                else:
+                                    media_filename = f"media_{m.id}{ext or '.jpg'}"
+
+                                dest_path = media_dir / media_filename
+                                try:
+                                    # Actually download the file
+                                    await client.download_media(m, file=str(dest_path))
+                                    relative_media_path = f"media/{media_filename}"
+                                except Exception as media_err:
+                                    console.print(f"[yellow]  ⚠️ Failed to download media for message {m.id}: {media_err}[/yellow]")
+                                    pass
+
+                            f.write(f"### [{date_str}] **{sender}**{sender_username}\n")
+                            if m.text:
+                                f.write(f"{m.text}\n")
+                                if relative_media_path:
+                                    is_photo = hasattr(m.media, "photo") or (hasattr(m.media, "document") and getattr(m.media.document, "mime_type", "").startswith("image/"))
+                                    if is_photo:
+                                        f.write(f"\n![Photo]({relative_media_path})\n")
+                                    else:
+                                        mime = getattr(m.media.document, "mime_type", "FILE") if hasattr(m.media, "document") else "FILE"
+                                        f.write(f"\n[{mime.upper()} Attachment]({relative_media_path})\n")
+                            else:
+                                if relative_media_path:
+                                    is_photo = hasattr(m.media, "photo") or (hasattr(m.media, "document") and getattr(m.media.document, "mime_type", "").startswith("image/"))
+                                    if is_photo:
+                                        f.write(f"![Photo]({relative_media_path})\n")
+                                    else:
+                                        mime = getattr(m.media.document, "mime_type", "FILE") if hasattr(m.media, "document") else "FILE"
+                                        f.write(f"[{mime.upper()} Attachment]({relative_media_path})\n")
+                                else:
+                                    media_type = type(m.media).__name__ if m.media else None
+                                    if media_type:
+                                        f.write(f"*[{media_type} attachment]*\n")
+                            f.write("\n---\n\n")
+                    else:
+                        f.write(f"Chat Export with {entity_title}\n")
+                        f.write(f"Account: {account.alias} ({account.phone})\n")
+                        f.write(f"Exported At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"Total Messages: {len(messages)}\n")
+                        f.write("="*80 + "\n\n")
+
+                        for m in messages:
+                            date_str = m.date.strftime("%Y-%m-%d %H:%M:%S")
+                            sender = "Unknown"
+                            sender_username = ""
+                            if m.sender:
+                                sender = getattr(m.sender, "title", None) or \
+                                         f"{getattr(m.sender, 'first_name', '')} {getattr(m.sender, 'last_name', '')}".strip() or \
+                                         getattr(m.sender, "username", None) or \
+                                         str(m.sender_id)
+                                if getattr(m.sender, "username", None):
+                                    sender_username = f" (@{m.sender.username})"
+
+                            # Download media if requested
+                            relative_media_path = None
+                            if export_media and m.media:
+                                ext = ""
+                                original_name = None
+                                if hasattr(m, "file") and m.file:
+                                    ext = m.file.ext or ""
+                                    original_name = m.file.name
+
+                                if original_name:
+                                    safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_name)
+                                    media_filename = f"{m.id}_{safe_name}"
+                                else:
+                                    media_filename = f"media_{m.id}{ext or '.jpg'}"
+
+                                dest_path = media_dir / media_filename
+                                try:
+                                    # Actually download the file
+                                    await client.download_media(m, file=str(dest_path))
+                                    relative_media_path = f"media/{media_filename}"
+                                except Exception:
+                                    pass
+
+                            text_content = m.text or ""
+                            if relative_media_path:
+                                if text_content:
+                                    text_content += f" [Attachment: {relative_media_path}]"
+                                else:
+                                    text_content = f"[Attachment: {relative_media_path}]"
+                            elif m.media:
+                                text_content = text_content + f" [{type(m.media).__name__} attachment]" if text_content else f"[{type(m.media).__name__} attachment]"
+
+                            f.write(f"[{date_str}] {sender}{sender_username}: {text_content}\n")
+                saved_count += 1
+
+            return f"Exported {saved_count} chats"
+
+        broadcast_results = await self.manager.run_on_all(_export_action, accounts=selected_accounts)
+        _render_broadcast_table(broadcast_results, value_header="Summary")
+
     # ---- helpers --------------------------------------------------------
     @staticmethod
     def _suggest_alias(phone: str) -> str:
@@ -852,6 +1355,7 @@ class InteractiveCLI:
         "single": single_action,
         "multi": multi_action,
         "lists": manage_lists,
+        "export": export_chat_history,
         "relogin": relogin,
         "remove": remove_account,
         "logout": logout,

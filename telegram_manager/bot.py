@@ -23,10 +23,31 @@ from aiogram.types import (
 )
 from telethon import TelegramClient
 from telethon.errors import (
+    AuthKeyUnregisteredError,
+    ChannelInvalidError,
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatIdInvalidError,
+    ChatSendPlainTextForbiddenError,
+    ChatWriteForbiddenError,
     FloodWaitError,
+    InputUserDeactivatedError,
+    InviteHashExpiredError,
+    InviteHashInvalidError,
+    MessageActionForbiddenError,
+    PeerIdInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
     SessionPasswordNeededError,
+    SessionRevokedError,
+    SlowModeWaitError,
+    UserBannedInChannelError,
+    UserDeactivatedBanError,
+    UserIsBlockedError,
+    UserPrivacyRestrictedError,
+    UserRestrictedError,
+    UsernameInvalidError,
+    UsernameNotOccupiedError,
 )
 from telethon.sessions import StringSession
 
@@ -52,10 +73,13 @@ from .db import (
     register_admin,
     remove_account,
     remove_list,
+    resolve_admin_id,
     save_broadcast_msg,
     set_admin_lang,
     transfer_all,
+    update_auto_reply,
 )
+from .auto_verify import auto_verify_group
 from .device_presets import get_preset
 from .i18n import LANGUAGES, get_lang, set_lang, t
 from .logger import get_logger
@@ -69,6 +93,11 @@ _last_bot_msg: Dict[int, int] = {}  # uid -> message_id to delete
 _global_broadcast_sem: Optional[asyncio.Semaphore] = None
 _global_broadcast_sem_limit: Optional[int] = None
 _owner_error_alerts: Dict[str, float] = {}
+_MAX_NAME_LENGTH = 100
+
+
+def _name_too_long_message(name: str) -> str:
+    return f"Name too long ({len(name)}/{_MAX_NAME_LENGTH} characters). Please enter a shorter name:"
 
 
 def _format_delay(delay: tuple[float, float]) -> str:
@@ -405,6 +434,37 @@ async def _broadcast_entities_for_target(client: TelegramClient, target: str) ->
     return [await _join_and_resolve_target(client, target)]
 
 
+def _categorize_broadcast_error(exc: BaseException) -> str:
+    if isinstance(exc, SlowModeWaitError):
+        return f"SlowMode {exc.seconds}s"
+    if isinstance(exc, FloodWaitError):
+        return f"Flood {exc.seconds}s"
+    if isinstance(exc, UserBannedInChannelError):
+        return "Banned from group"
+    if isinstance(exc, ChatWriteForbiddenError):
+        return "Muted / can't write"
+    if isinstance(exc, ChatAdminRequiredError):
+        return "Admin-only chat / admin required"
+    if isinstance(exc, ChatSendPlainTextForbiddenError):
+        return "Text disabled / plain text forbidden"
+    if isinstance(exc, MessageActionForbiddenError):
+        return "Text/action disabled in chat"
+    if isinstance(exc, (ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, PeerIdInvalidError)):
+        return "Group inaccessible/private/invalid peer"
+    if isinstance(exc, (UsernameNotOccupiedError, UsernameInvalidError)):
+        return "Invalid username/link"
+    if isinstance(exc, (InviteHashExpiredError, InviteHashInvalidError)):
+        return "Invalid/expired invite link"
+    if isinstance(exc, (UserRestrictedError, UserPrivacyRestrictedError, UserIsBlockedError)):
+        return "Restricted/privacy/blocked target"
+    if isinstance(exc, InputUserDeactivatedError):
+        return "Target user deactivated"
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return f"Proxy/Network {type(exc).__name__}"
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 def _log_chat_id():
     """Get log destination from env. Can be user_id (int) or @username."""
     raw = os.getenv("LOG_CHAT_ID", "")
@@ -504,13 +564,33 @@ def _auto_health_check_interval_seconds() -> int:
         return 43200
 
 
+def _is_terminal_account_error(exc: BaseException) -> bool:
+    return isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
+
+
+async def _remove_invalid_account(bot: Bot, admin_id: int, acc: AccountRow, reason: str) -> None:
+    removed = remove_account(admin_id, acc.phone)
+    if not removed:
+        return
+    detail = f"[{acc.alias}] removed from account list: {reason}"
+    log.warning("Auto-removed invalid account admin=%s alias=%s reason=%s", admin_id, acc.alias, reason)
+    try:
+        await bot.send_message(admin_id, f"⚠️ Account auto-removed\n{detail}")
+    except Exception:
+        log.exception("Failed to notify admin about auto-removed account")
+    await _notify_owners(bot, f"Invalid account auto-removed\nAdmin: {admin_id}\nAccount: {acc.alias}\nReason: {reason}")
+
+
 async def _check_account_health(bot: Bot, admin_id: int, acc: AccountRow) -> None:
     client = _client_from_session(acc.session_string, acc.device_preset, acc)
     try:
         await client.connect()
         await client.get_me()
     except Exception as exc:
-        await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
+        if _is_terminal_account_error(exc):
+            await _remove_invalid_account(bot, admin_id, acc, type(exc).__name__)
+        else:
+            await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
     finally:
         if client.is_connected():
             await client.disconnect()
@@ -531,6 +611,20 @@ async def _auto_health_check_loop(bot: Bot) -> None:
         except Exception as exc:
             await _alert_runtime_error(bot, "auto health check scheduler", exc)
         await asyncio.sleep(_auto_health_check_interval_seconds())
+
+
+async def _auto_reply_reconcile_loop() -> None:
+    """Periodically reconcile auto-reply clients with DB state."""
+    from .auto_reply import reconcile_auto_reply_clients
+
+    await asyncio.sleep(30)  # initial delay
+    interval = int(os.getenv("AUTO_REPLY_RECONCILE_INTERVAL", "90"))
+    while True:
+        try:
+            await reconcile_auto_reply_clients()
+        except Exception:
+            log.debug("auto_reply reconcile error", exc_info=True)
+        await asyncio.sleep(interval)
 
 
 def _display_user_name(user) -> str:
@@ -750,6 +844,34 @@ async def cmd_gift(message: Message) -> None:
         )
         return
     await message.answer(f"VIP aktif untuk user `{target_id}`. Status: VIP", parse_mode="Markdown")
+
+
+@router.message(Command("control"))
+async def cmd_control(message: Message) -> None:
+    uid = message.from_user.id
+    if not _is_owner(uid):
+        await message.answer("Access denied. Command ini khusus owner.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /control <userid|phone|username>")
+        return
+
+    target_id = resolve_admin_id(parts[1])
+    if target_id is None:
+        await message.answer("Admin tidak ditemukan. Pakai user ID, nomor HP, atau username yang sudah terdaftar.")
+        return
+    if target_id == uid:
+        await message.answer("Data itu sudah ada di owner.")
+        return
+
+    count = transfer_all(target_id, uid)
+    await message.answer(
+        f"Control berhasil. Admin `{target_id}` dipindahkan ke owner `{uid}`.\n"
+        f"Transferred {count} item(s).",
+        parse_mode="Markdown",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1166,34 @@ async def cb_eu(cq: CallbackQuery) -> None:
     await cq.message.edit_text("Enter new username (without @):")
 
 
+@router.callback_query(F.data.startswith("ar:"))
+async def cb_ar(cq: CallbackQuery) -> None:
+    """Auto Reply toggle / setup."""
+    await cq.answer()
+    uid = cq.from_user.id
+    alias = cq.data[3:]
+    acc = find_account(uid, alias)
+    if not acc:
+        await cq.message.edit_text("Not found.")
+        return
+    if acc.auto_reply_enabled:
+        # Disable
+        try:
+            update_auto_reply(uid, acc.phone, enabled=False)
+        except Exception as e:
+            await cq.message.edit_text(f"Error disabling auto-reply: {e}")
+            return
+        await cq.message.edit_text(f"[{alias}] Auto Reply disabled.")
+    else:
+        _state[uid] = {"action": "auto_reply_text", "alias": alias}
+        await cq.message.edit_text(
+            f"[{alias}] Auto Reply\n\n"
+            "Send the auto-reply message you want to use.\n"
+            "Formatting (bold, italic, links, etc.) will be preserved exactly as you send it.\n\n"
+            "This will only reply to NEW chats (users who never messaged before)."
+        )
+
+
 @router.callback_query(F.data.startswith("clean:"))
 async def cb_clean(cq: CallbackQuery) -> None:
     await cq.answer()
@@ -1092,9 +1242,11 @@ async def cb_acc(cq: CallbackQuery) -> None:
         info += f"\n🔗 @{acc.username}"
     info += f"\n🔐 2FA: {'yes' if acc.is_2fa else 'no'}"
     info += f"\n📟 Device: {acc.device_preset}"
+    ar_label = "✅ Auto Reply ON" if acc.auto_reply_enabled else "💤 Auto Reply OFF"
     buttons = [
         [InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit:{acc.alias}"),
          InlineKeyboardButton(text="📨 OTP", callback_data=f"otp:{acc.alias}")],
+        [InlineKeyboardButton(text=ar_label, callback_data=f"ar:{acc.alias}")],
         [InlineKeyboardButton(text="🗑 Remove", callback_data=f"clean:{acc.alias}")],
     ]
     await cq.message.edit_text(info, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1157,7 +1309,6 @@ async def handle_media(message: Message) -> None:
 
 async def _start_broadcast(message: Message, uid: int) -> None:
     """Start the continuous broadcast loop."""
-    from telethon.errors import ChatWriteForbiddenError, SlowModeWaitError, UserBannedInChannelError
     from datetime import datetime, timezone
 
     st = _state.get(uid, {})
@@ -1261,6 +1412,14 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                                 break
                             try:
                                 entities = await _broadcast_entities_for_target(client, target)
+                                # Auto-verify: detect and click verification buttons
+                                for entity in entities:
+                                    try:
+                                        clicked = await auto_verify_group(client, entity)
+                                        if clicked:
+                                            log.info("[%s] Auto-verified '%s' in %s", acc.alias, clicked, target)
+                                    except Exception:
+                                        pass
                                 sent_count = 0
                                 for entity in entities:
                                     text_to_send = message_text_for_send()
@@ -1274,35 +1433,22 @@ async def _start_broadcast(message: Message, uid: int) -> None:
                                     success_line += f" ({sent_count} chats)"
                                 await append_success(success_line)
                                 acc_success.append(success_line)
-                            except (ChatWriteForbiddenError, UserBannedInChannelError):
-                                failed_line = f"{acc.alias} -> {target}: Blocked"
-                                await append_failed(failed_line)
-                                acc_failed.append(failed_line)
-                            except SlowModeWaitError as sme:
-                                failed_line = f"{acc.alias} -> {target}: SlowMode {sme.seconds}s"
-                                await append_failed(failed_line)
-                                acc_failed.append(failed_line)
                             except FloodWaitError as fw:
-                                failed_line = f"{acc.alias} -> {target}: Flood {fw.seconds}s"
+                                failed_line = f"{acc.alias} -> {target}: {_categorize_broadcast_error(fw)}"
                                 await append_failed(failed_line)
                                 acc_failed.append(failed_line)
                                 await asyncio.sleep(fw.seconds)
-                            except (OSError, TimeoutError, ConnectionError) as ex:
-                                failed_line = f"{acc.alias} -> {target}: Proxy/Network {type(ex).__name__}"
-                                await append_failed(failed_line)
-                                acc_failed.append(failed_line)
                             except Exception as ex:
-                                failed_line = f"{acc.alias} -> {target}: {type(ex).__name__}"
+                                failed_line = f"{acc.alias} -> {target}: {_categorize_broadcast_error(ex)}"
                                 await append_failed(failed_line)
                                 acc_failed.append(failed_line)
                             await maybe_delay_after_target()
-                    except (OSError, TimeoutError, ConnectionError) as ex:
-                        failed_line = f"{acc.alias}: Proxy/Network {type(ex).__name__}"
-                        await append_failed(failed_line)
-                        acc_failed.append(failed_line)
-                        await _alert_runtime_error(bot, "broadcast account runtime", ex)
                     except Exception as ex:
-                        failed_line = f"{acc.alias}: {type(ex).__name__}"
+                        if _is_terminal_account_error(ex):
+                            await _remove_invalid_account(bot, uid, acc, _categorize_broadcast_error(ex))
+                            failed_line = f"{acc.alias}: {_categorize_broadcast_error(ex)} (auto-removed)"
+                        else:
+                            failed_line = f"{acc.alias}: {_categorize_broadcast_error(ex)}"
                         await append_failed(failed_line)
                         acc_failed.append(failed_line)
                         await _alert_runtime_error(bot, "broadcast account runtime", ex)
@@ -1537,6 +1683,9 @@ async def handle_text(message: Message) -> None:
 
     # --- Saved text ---
     elif action == "savetext_name":
+        if len(text) > _MAX_NAME_LENGTH:
+            await message.answer(_name_too_long_message(text))
+            return
         _state[uid] = {"action": "savetext_body", "name": text}
         await message.answer("Kirim isi text yang mau disimpan:", reply_markup=_back_kb())
 
@@ -1547,6 +1696,9 @@ async def handle_text(message: Message) -> None:
 
     # --- Create list ---
     elif action == "createlist_name":
+        if len(text) > _MAX_NAME_LENGTH:
+            await message.answer(_name_too_long_message(text))
+            return
         _state[uid] = {"action": "createlist_targets", "name": text, "targets": []}
         await message.answer(
             f"Group list: {text}\n\n"
@@ -1696,6 +1848,26 @@ async def handle_text(message: Message) -> None:
             if client.is_connected():
                 await client.disconnect()
 
+    # --- Auto Reply ---
+    elif action == "auto_reply_text":
+        alias = state["alias"]
+        _state.pop(uid, None)
+        acc = find_account(uid, alias)
+        if not acc:
+            await message.answer("Not found.", reply_markup=_back_kb())
+            return
+        html_text = _entities_to_html(message.text or "", message.entities or [])
+        try:
+            update_auto_reply(uid, acc.phone, enabled=True, text=html_text)
+        except Exception as e:
+            await message.answer(f"Error saving auto-reply: {e}", reply_markup=_back_kb())
+            return
+        await message.answer(
+            f"[{alias}] Auto Reply enabled.\n\n"
+            f"Preview:\n{html_text[:500]}",
+            reply_markup=_main_kb(uid),
+            parse_mode="HTML",
+        )
 
     elif action == "broadcast_msg":
         # Save the full message (text + entities + media)
@@ -1716,6 +1888,9 @@ async def handle_text(message: Message) -> None:
             await _ask_group_delay(message)
 
     elif action == "broadcast_save_name":
+        if len(text) > _MAX_NAME_LENGTH:
+            await message.answer(_name_too_long_message(text))
+            return
         src = _state[uid]["message"]
         raw_text = src.text or src.caption or ""
         entities = src.entities or src.caption_entities or []
@@ -1935,5 +2110,6 @@ async def run_bot() -> None:
     dp = Dispatcher()
     dp.include_router(router)
     asyncio.create_task(_auto_health_check_loop(bot))
+    asyncio.create_task(_auto_reply_reconcile_loop())
     log.info("Bot starting...")
     await dp.start_polling(bot)
