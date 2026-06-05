@@ -666,8 +666,9 @@ def _main_kb(uid: int = 0, has_accounts: bool = True) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton(text=labels[0]), KeyboardButton(text=labels[1])],
             [KeyboardButton(text=labels[2]), KeyboardButton(text=labels[3])],
-            [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[5])],
-            [KeyboardButton(text=labels[6]), KeyboardButton(text=labels[7])],
+            [KeyboardButton(text=labels[4]), KeyboardButton(text=labels[8])],
+            [KeyboardButton(text=labels[5]), KeyboardButton(text=labels[6])],
+            [KeyboardButton(text=labels[7])],
         ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -677,61 +678,61 @@ _MENU_LABELS = {
         "➕ Tambah Akun", "👤 Akun Saya",
         "📣 Broadcast", "💬 Kelola Text",
         "👥 Manage Group", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "🔄 Transfer", "🌐 Bahasa", "💬 Auto Reply",
     ],
     "en": [
         "➕ Add Account", "👤 My Accounts",
         "📣 Broadcast", "💬 Manage Text",
         "👥 Manage Group", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Language",
+        "🔄 Transfer", "🌐 Language", "💬 Auto Reply",
     ],
     "ms": [
         "➕ Tambah Akaun", "👤 Akaun Saya",
         "📣 Broadcast", "💬 Kelola Text",
         "👥 Manage Group", "🗑 Hapus/Logout",
-        "🔄 Transfer", "🌐 Bahasa",
+        "🔄 Transfer", "🌐 Bahasa", "💬 Auto Reply",
     ],
     "th": [
         "➕ เพิ่มบัญชี", "👤 บัญชีของฉัน",
         "📣 Broadcast", "💬 Manage Text",
         "👥 Manage Group", "🗑 ลบ/Logout",
-        "🔄 โอนข้อมูล", "🌐 ภาษา",
+        "🔄 โอนข้อมูล", "🌐 ภาษา", "💬 Auto Reply",
     ],
     "vi": [
         "➕ Thêm TK", "👤 Tài khoản",
         "📣 Broadcast", "💬 Manage Text",
         "👥 Manage Group", "🗑 Xóa/Logout",
-        "🔄 Chuyển", "🌐 Ngôn ngữ",
+        "🔄 Chuyển", "🌐 Ngôn ngữ", "💬 Auto Reply",
     ],
     "zh": [
         "➕ 添加账号", "👤 我的账号",
         "📣 广播", "💬 Manage Text",
         "👥 Manage Group", "🗑 删除/登出",
-        "🔄 转移", "🌐 语言",
+        "🔄 转移", "🌐 语言", "💬 Auto Reply",
     ],
     "ja": [
         "➕ アカウント追加", "👤 マイアカウント",
         "📣 ブロードキャスト", "💬 Manage Text",
         "👥 Manage Group", "🗑 削除/ログアウト",
-        "🔄 転送", "🌐 言語",
+        "🔄 転送", "🌐 言語", "💬 Auto Reply",
     ],
     "ko": [
         "➕ 계정 추가", "👤 내 계정",
         "📣 브로드캐스트", "💬 Manage Text",
         "👥 Manage Group", "🗑 삭제/로그아웃",
-        "🔄 전송", "🌐 언어",
+        "🔄 전송", "🌐 언어", "💬 Auto Reply",
     ],
     "hi": [
         "➕ अकाउंट जोड़ें", "👤 मेरे अकाउंट",
         "📣 Broadcast", "💬 Manage Text",
         "👥 Manage Group", "🗑 हटाएं/Logout",
-        "🔄 ट्रांसफर", "🌐 भाषा",
+        "🔄 ट्रांसफर", "🌐 भाषा", "💬 Auto Reply",
     ],
     "fil": [
         "➕ Dagdag Account", "👤 Mga Account",
         "📣 Broadcast", "💬 Manage Text",
         "👥 Manage Group", "🗑 Remove/Logout",
-        "🔄 Transfer", "🌐 Wika",
+        "🔄 Transfer", "🌐 Wika", "💬 Auto Reply",
     ],
 }
 
@@ -742,7 +743,7 @@ def _get_menu_action(text: str) -> str | None:
         if text in labels:
             idx = labels.index(text)
             return ["add", "accounts", "broadcast", "saved",
-                    "lists", "cleanup", "transfer", "lang"][idx]
+                    "lists", "cleanup", "transfer", "lang", "auto_reply"][idx]
     return None
 
 
@@ -785,6 +786,16 @@ def _accounts_kb(admin_id: int) -> ReplyKeyboardMarkup:
     buttons = [[KeyboardButton(text=a.alias)] for a in accounts]
     buttons.append([KeyboardButton(text="<< Menu")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def _auto_reply_choice_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ ON / Set Text"), KeyboardButton(text="❌ OFF")],
+            [KeyboardButton(text="<< Menu")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1549,6 +1560,23 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
             return
         buttons = [[InlineKeyboardButton(text=a.display_name, callback_data=f"clean:{a.alias}")] for a in accounts]
         await _reply(message, uid, t("pick_account", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+    elif action == "auto_reply":
+        if not accounts:
+            await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
+            return
+        if len(accounts) == 1:
+            acc = accounts[0]
+            _state[uid] = {"action": "auto_reply_choose", "alias": acc.alias}
+            status = "ON" if acc.auto_reply_enabled else "OFF"
+            await _reply(
+                message,
+                uid,
+                f"💬 Auto Reply [{acc.alias}]\nStatus: {status}\n\nPilih aksi:",
+                reply_markup=_auto_reply_choice_kb(),
+            )
+            return
+        _state[uid] = {"action": "auto_reply_pick"}
+        await _reply(message, uid, "Pilih akun untuk Auto Reply:", reply_markup=_accounts_kb(uid))
     elif action == "transfer":
         if not accounts:
             await _reply(message, uid, t("no_accounts", uid), reply_markup=_main_kb(uid), parse_mode="HTML")
@@ -1854,6 +1882,45 @@ async def handle_text(message: Message) -> None:
                 await client.disconnect()
 
     # --- Auto Reply ---
+    elif action == "auto_reply_pick":
+        acc = find_account(uid, text)
+        if not acc:
+            await message.answer("Akun tidak ditemukan. Pilih alias dari keyboard:", reply_markup=_accounts_kb(uid))
+            return
+        _state[uid] = {"action": "auto_reply_choose", "alias": acc.alias}
+        status = "ON" if acc.auto_reply_enabled else "OFF"
+        await message.answer(
+            f"💬 Auto Reply [{acc.alias}]\nStatus: {status}\n\nPilih aksi:",
+            reply_markup=_auto_reply_choice_kb(),
+        )
+
+    elif action == "auto_reply_choose":
+        alias = state["alias"]
+        acc = find_account(uid, alias)
+        if not acc:
+            _state.pop(uid, None)
+            await message.answer("Not found.", reply_markup=_main_kb(uid))
+            return
+        if text == "❌ OFF":
+            try:
+                update_auto_reply(uid, acc.phone, enabled=False)
+            except Exception as e:
+                await message.answer(f"Error disabling auto-reply: {e}", reply_markup=_back_kb())
+                return
+            _state.pop(uid, None)
+            await message.answer(f"[{alias}] Auto Reply disabled.", reply_markup=_main_kb(uid))
+            return
+        if text == "✅ ON / Set Text":
+            _state[uid] = {"action": "auto_reply_text", "alias": alias}
+            await message.answer(
+                f"[{alias}] Kirim text Auto Reply yang mau dipakai.\n"
+                "Formatting seperti bold/italic/link akan disimpan.\n\n"
+                "Auto Reply hanya untuk chat baru/fresh yang belum pernah ada outgoing chat.",
+                reply_markup=_back_kb(),
+            )
+            return
+        await message.answer("Pilih ON / Set Text atau OFF dari keyboard:", reply_markup=_auto_reply_choice_kb())
+
     elif action == "auto_reply_text":
         alias = state["alias"]
         _state.pop(uid, None)
