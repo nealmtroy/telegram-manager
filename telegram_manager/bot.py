@@ -6,9 +6,12 @@ guided by conversation state.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import random
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -63,14 +66,19 @@ from .db import (
     BroadcastListRow,
     add_account,
     add_list,
+    clear_account_broadcast_status,
+    create_broadcast_job,
     delete_saved_msg,
     find_account,
     get_account_count,
     get_accounts,
     get_admin_ids,
     get_admin_lang,
+    get_broadcast_job,
+    get_broadcast_job_items,
     get_list,
     get_lists,
+    get_recoverable_broadcast_jobs,
     get_saved_messages,
     grant_vip,
     is_managed_account,
@@ -79,12 +87,19 @@ from .db import (
     register_admin,
     remove_account,
     remove_list,
+    reset_broadcast_items_for_next_round,
+    reset_running_broadcast_items,
     resolve_admin_id,
     save_broadcast_msg,
     set_admin_lang,
     transfer_all,
+    update_account_runtime,
     update_auto_reply,
+    update_broadcast_job,
+    update_broadcast_job_item,
+    upsert_broadcast_job_items,
 )
+from .account_locks import account_lease, cleanup_stale_leases
 from .auto_verify import auto_verify_group
 from .device_presets import get_preset
 from .i18n import LANGUAGES, get_lang, set_lang, t
@@ -253,6 +268,27 @@ def _assignment_for_new_account(admin_id: int, phone: str) -> tuple[Optional[int
         api_index = min(existing_count // max(1, cfg.api_account_limit), len(cfg.api_credentials) - 1)
     proxy_index = _stable_index(admin_id, phone, modulo=len(cfg.proxies)) if cfg.proxies else None
     return api_index, proxy_index
+
+
+def _proxy_host_for_account(acc: AccountRow) -> str:
+    cfg = load_config()
+    proxy = cfg.proxy_for_index(_proxy_index_for_account(acc))
+    return proxy.host if proxy else ""
+
+
+def _runtime_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _mark_account_connected(acc: AccountRow, *, status: str = "") -> None:
+    update_account_runtime(
+        acc.admin_id,
+        acc.phone,
+        connected_ip=_proxy_host_for_account(acc),
+        last_connected_at=_runtime_now(),
+        broadcast_status=status,
+        broadcast_updated_at=_runtime_now(),
+    )
 
 
 def _client_from_session(session_string: str, preset_key: str, acc: Optional[AccountRow] = None) -> TelegramClient:
@@ -590,18 +626,23 @@ async def _remove_invalid_account(bot: Bot, admin_id: int, acc: AccountRow, reas
 
 
 async def _check_account_health(bot: Bot, admin_id: int, acc: AccountRow) -> None:
-    client = _client_from_session(acc.session_string, acc.device_preset, acc)
-    try:
-        await client.connect()
-        await client.get_me()
-    except Exception as exc:
-        if _is_terminal_account_error(exc):
-            await _remove_invalid_account(bot, admin_id, acc, type(exc).__name__)
-        else:
-            await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
-    finally:
-        if client.is_connected():
-            await client.disconnect()
+    async with account_lease(admin_id, acc.phone, purpose="health_check", ttl_seconds=60, wait_seconds=0) as lease:
+        if not lease.acquired:
+            log.debug("health check skipped locked account admin=%s alias=%s", admin_id, acc.alias)
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
+        try:
+            await client.connect()
+            await client.get_me()
+            _mark_account_connected(acc)
+        except Exception as exc:
+            if _is_terminal_account_error(exc):
+                await _remove_invalid_account(bot, admin_id, acc, type(exc).__name__)
+            else:
+                await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
+        finally:
+            if client.is_connected():
+                await client.disconnect()
 
 
 async def _run_auto_health_check_once(bot: Bot) -> None:
@@ -615,6 +656,7 @@ async def _auto_health_check_loop(bot: Bot) -> None:
     await asyncio.sleep(60)
     while True:
         try:
+            await cleanup_stale_leases()
             await _run_auto_health_check_once(bot)
         except Exception as exc:
             await _alert_runtime_error(bot, "auto health check scheduler", exc)
@@ -1249,16 +1291,20 @@ async def cb_lo(cq: CallbackQuery) -> None:
     uid = cq.from_user.id
     acc = find_account(uid, cq.data[3:])
     if acc:
-        client = _client_from_session(acc.session_string, acc.device_preset, acc)
-        try:
-            await client.connect()
-            await client.log_out()
-        except Exception:
-            pass
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-        remove_account(uid, acc.phone)
+        async with account_lease(uid, acc.phone, purpose="logout", ttl_seconds=60, wait_seconds=10) as lease:
+            if not lease.acquired:
+                await cq.message.edit_text(f"[{cq.data[3:]}] Account is busy. Try again later.")
+                return
+            client = _client_from_session(acc.session_string, acc.device_preset, acc)
+            try:
+                await client.connect()
+                await client.log_out()
+            except Exception:
+                pass
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+            remove_account(uid, acc.phone)
     await cq.message.edit_text(f"[{cq.data[3:]}] Logged out.")
 
 
@@ -1282,6 +1328,14 @@ async def cb_acc(cq: CallbackQuery) -> None:
         info += f"\n🔗 @{acc.username}"
     info += f"\n🔐 2FA: {'yes' if acc.is_2fa else 'no'}"
     info += f"\n📟 Device: {acc.device_preset}"
+    if acc.last_connected_at:
+        info += f"\n🕐 Last connected: {acc.last_connected_at}"
+    if acc.connected_ip:
+        info += f"\n🌐 Proxy/IP: {acc.connected_ip}"
+    if acc.broadcast_status:
+        info += f"\n📣 Broadcast: {acc.broadcast_status}"
+    if acc.broadcast_updated_at:
+        info += f"\n♻️ Updated: {acc.broadcast_updated_at}"
     ar_label = "✅ Auto Reply ON" if acc.auto_reply_enabled else "💤 Auto Reply OFF"
     buttons = [
         [InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit:{acc.alias}"),
@@ -1301,30 +1355,34 @@ async def cb_otp(cq: CallbackQuery) -> None:
     if not acc:
         await cq.message.edit_text("Not found.")
         return
-    client = _client_from_session(acc.session_string, acc.device_preset, acc)
-    try:
-        await client.connect()
-        from telethon.tl.types import InputPeerUser
-        from datetime import datetime, timezone
-        import re as _re
-        codes = []
-        async for msg in client.iter_messages(777000, limit=5):
-            # 777000 is Telegram's official service notifications
-            nums = _re.findall(r"\b\d{4,6}\b", msg.text or "")
-            if nums:
-                ts = msg.date.astimezone(timezone.utc).strftime("%H:%M:%S")
-                codes.append(f"🕐 {ts} — 🔑 {nums[0]}")
-        if not codes:
-            await cq.message.edit_text(f"[{acc.alias}] Tidak ada OTP terbaru.")
-        else:
-            await cq.message.edit_text(
-                f"📨 OTP [{acc.alias}]:\n\n" + "\n".join(codes))
-    except Exception as e:
-        await _alert_runtime_error(cq.message.bot, "otp lookup", e)
-        await cq.message.edit_text(f"[{acc.alias}] Error: {type(e).__name__}")
-    finally:
-        if client.is_connected():
-            await client.disconnect()
+    async with account_lease(uid, acc.phone, purpose="otp", ttl_seconds=60, wait_seconds=5) as lease:
+        if not lease.acquired:
+            await cq.message.edit_text(f"[{acc.alias}] Account is busy. Try again later.")
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
+        try:
+            await client.connect()
+            from telethon.tl.types import InputPeerUser
+            from datetime import datetime, timezone
+            import re as _re
+            codes = []
+            async for msg in client.iter_messages(777000, limit=5):
+                # 777000 is Telegram's official service notifications
+                nums = _re.findall(r"\b\d{4,6}\b", msg.text or "")
+                if nums:
+                    ts = msg.date.astimezone(timezone.utc).strftime("%H:%M:%S")
+                    codes.append(f"🕐 {ts} — 🔑 {nums[0]}")
+            if not codes:
+                await cq.message.edit_text(f"[{acc.alias}] Tidak ada OTP terbaru.")
+            else:
+                await cq.message.edit_text(
+                    f"📨 OTP [{acc.alias}]:\n\n" + "\n".join(codes))
+        except Exception as e:
+            await _alert_runtime_error(cq.message.bot, "otp lookup", e)
+            await cq.message.edit_text(f"[{acc.alias}] Error: {type(e).__name__}")
+        finally:
+            if client.is_connected():
+                await client.disconnect()
 
 
 # ---------------------------------------------------------------------------
@@ -1347,10 +1405,267 @@ async def handle_media(message: Message) -> None:
     await message.answer("Media received.\n\nSave this message for reuse?", reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True))
 
 
+def _serialize_broadcast_media(media_bytes: Optional[bytes]) -> Optional[str]:
+    if not media_bytes:
+        return None
+    return base64.b64encode(media_bytes).decode("ascii")
+
+
+def _deserialize_broadcast_media(raw: Optional[str]) -> Optional[bytes]:
+    if not raw:
+        return None
+    return base64.b64decode(raw.encode("ascii"))
+
+
+def _build_broadcast_job_payload(
+    uid: int,
+    list_name: str,
+    msg_text: str,
+    saved_texts: list[str],
+    has_media: bool,
+    media_bytes: Optional[bytes],
+    media_filename: Optional[str],
+    group_delay: tuple[float, float],
+    round_delay: tuple[float, float],
+) -> dict:
+    return {
+        "job_id": f"bc-{uid}-{uuid.uuid4().hex[:12]}",
+        "admin_id": uid,
+        "list_name": list_name,
+        "status": "running",
+        "text_mode": "multi_random" if saved_texts else ("single" if msg_text else "message"),
+        "message_html": msg_text,
+        "saved_texts": saved_texts,
+        "has_media": has_media,
+        "media_blob_base64": _serialize_broadcast_media(media_bytes),
+        "media_filename": media_filename,
+        "group_delay_min": group_delay[0],
+        "group_delay_max": group_delay[1],
+        "round_delay_min": round_delay[0],
+        "round_delay_max": round_delay[1],
+        "round_num": 0,
+        "started_at": _runtime_now(),
+        "updated_at": _runtime_now(),
+        "completed_at": None,
+    }
+
+
+def _message_text_for_send(base_text: str, saved_texts: list[str], watermark: str) -> str:
+    selected_text = random.choice(saved_texts) if saved_texts else base_text
+    if watermark:
+        return (selected_text + f"\n\n{watermark}") if selected_text else watermark
+    return selected_text
+
+
+async def _run_broadcast_job(
+    bot: Bot,
+    uid: int,
+    job: dict,
+    accounts: list[AccountRow],
+    *,
+    stop_if_state_missing: bool,
+    notify_chat_id: Optional[int],
+) -> None:
+    list_name = job["list_name"]
+    bl = get_list(uid, list_name)
+    if not bl or not accounts:
+        update_broadcast_job(job["job_id"], status="failed", completed_at=_runtime_now())
+        return
+
+    saved_texts = list(job.get("saved_texts") or [])
+    msg_text = job.get("message_html", "") or ""
+    has_media = bool(job.get("has_media"))
+    media_bytes = _deserialize_broadcast_media(job.get("media_blob_base64"))
+    media_filename = job.get("media_filename")
+    watermark = _watermark_for_user(uid)
+    group_delay_min = float(job.get("group_delay_min") or 0.0)
+    group_delay_max = float(job.get("group_delay_max") or 0.0)
+    round_delay_min = float(job.get("round_delay_min") or 0.0)
+    round_delay_max = float(job.get("round_delay_max") or 0.0)
+    log_dest = _log_chat_id()
+    round_num = int(job.get("round_num") or 0)
+
+    def should_keep_running() -> bool:
+        if stop_if_state_missing:
+            return _state.get(uid, {}).get("action") == "broadcasting"
+        current = get_broadcast_job(job["job_id"])
+        return bool(current and current.get("status") == "running")
+
+    while should_keep_running():
+        round_num += 1
+        update_broadcast_job(job["job_id"], round_num=round_num, status="running")
+        round_success = []
+        round_failed = []
+        target_attempt = 0
+        target_attempt_lock = asyncio.Lock()
+        round_lock = asyncio.Lock()
+        per_admin_sem = asyncio.Semaphore(max(1, load_config().broadcast_per_admin_concurrency))
+        global_sem = _global_broadcast_semaphore()
+        remaining_items = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
+        if not remaining_items:
+            break
+        items_by_phone: dict[str, list[dict]] = {}
+        for item in remaining_items:
+            items_by_phone.setdefault(item["account_phone"], []).append(item)
+        total_targets = len(remaining_items)
+
+        async def maybe_delay_after_target() -> None:
+            nonlocal target_attempt
+            async with target_attempt_lock:
+                target_attempt += 1
+                should_delay = should_keep_running() and target_attempt < total_targets and group_delay_max > 0
+            if should_delay:
+                await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
+
+        async def append_success(line: str) -> None:
+            async with round_lock:
+                round_success.append(line)
+
+        async def append_failed(line: str) -> None:
+            async with round_lock:
+                round_failed.append(line)
+
+        async def run_account(acc: AccountRow) -> None:
+            account_items = items_by_phone.get(acc.phone, [])
+            if not account_items or not should_keep_running():
+                return
+            async with per_admin_sem:
+                async with global_sem:
+                    async with account_lease(acc.admin_id, acc.phone, purpose="broadcast", ttl_seconds=60, wait_seconds=0) as lease:
+                        if not lease.acquired:
+                            for item in account_items:
+                                update_broadcast_job_item(job["job_id"], acc.phone, item["target"], status="failed", last_error="Account busy/locked")
+                            await append_failed(f"{acc.alias}: busy/locked, skipped this round")
+                            return
+                        acc_success = []
+                        acc_failed = []
+                        client = None
+                        try:
+                            client = _client_from_session(acc.session_string, acc.device_preset, acc)
+                            await client.connect()
+                            await client.get_me()
+                            _mark_account_connected(acc, status="broadcasting")
+                            update_account_runtime(acc.admin_id, acc.phone, broadcast_job_id=job["job_id"], broadcast_updated_at=_runtime_now())
+                            for item in account_items:
+                                target = item["target"]
+                                if not should_keep_running():
+                                    break
+                                update_broadcast_job_item(job["job_id"], acc.phone, target, status="running", attempts_increment=True)
+                                try:
+                                    entities = await _broadcast_entities_for_target(client, target)
+                                    for entity in entities:
+                                        try:
+                                            clicked = await auto_verify_group(client, entity)
+                                            if clicked:
+                                                log.info("[%s] Auto-verified '%s' in %s", acc.alias, clicked, target)
+                                        except Exception:
+                                            pass
+                                    sent_count = 0
+                                    for entity in entities:
+                                        text_to_send = _message_text_for_send(msg_text, saved_texts, watermark)
+                                        if has_media and media_bytes:
+                                            await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
+                                        else:
+                                            await client.send_message(entity, text_to_send, parse_mode="html")
+                                        sent_count += 1
+                                    update_broadcast_job_item(job["job_id"], acc.phone, target, status="success", last_error=None)
+                                    success_line = f"{acc.alias} -> {target}"
+                                    if sent_count > 1:
+                                        success_line += f" ({sent_count} chats)"
+                                    await append_success(success_line)
+                                    acc_success.append(success_line)
+                                except FloodWaitError as fw:
+                                    detail = _categorize_broadcast_error(fw)
+                                    update_broadcast_job_item(job["job_id"], acc.phone, target, status="failed", last_error=detail)
+                                    failed_line = f"{acc.alias} -> {target}: {detail}"
+                                    await append_failed(failed_line)
+                                    acc_failed.append(failed_line)
+                                    await asyncio.sleep(fw.seconds)
+                                except Exception as ex:
+                                    detail = _categorize_broadcast_error(ex)
+                                    update_broadcast_job_item(job["job_id"], acc.phone, target, status="failed", last_error=detail)
+                                    failed_line = f"{acc.alias} -> {target}: {detail}"
+                                    await append_failed(failed_line)
+                                    acc_failed.append(failed_line)
+                                    if isinstance(ex, AuthKeyDuplicatedError):
+                                        await _notify_owners(
+                                            bot,
+                                            "Auth key duplication detected\n"
+                                            f"Admin: {uid}\n"
+                                            f"Account: {acc.alias} ({acc.phone})\n"
+                                            f"Proxy/IP: {acc.connected_ip or _proxy_host_for_account(acc) or '-'}\n"
+                                            f"Last connected: {acc.last_connected_at or '-'}"
+                                        )
+                                await maybe_delay_after_target()
+                        except Exception as ex:
+                            detail = _categorize_broadcast_error(ex)
+                            if _is_terminal_account_error(ex):
+                                await _remove_invalid_account(bot, uid, acc, detail)
+                                failed_line = f"{acc.alias}: {detail} (auto-removed)"
+                            else:
+                                failed_line = f"{acc.alias}: {detail}"
+                            update_account_runtime(acc.admin_id, acc.phone, broadcast_status="failed", broadcast_updated_at=_runtime_now())
+                            await append_failed(failed_line)
+                            acc_failed.append(failed_line)
+                            await _alert_runtime_error(bot, "broadcast account runtime", ex)
+                        finally:
+                            if client and client.is_connected():
+                                if log_dest and should_keep_running():
+                                    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                                    log_lines = [
+                                        f"Round {round_num} | {now}",
+                                        f"Account: {acc.alias}",
+                                        f"Sent: {len(acc_success)}",
+                                    ]
+                                    if acc_success:
+                                        log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
+                                    if acc_failed:
+                                        log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
+                                    try:
+                                        await client.send_message(log_dest, "\n".join(log_lines))
+                                    except Exception:
+                                        pass
+                                await client.disconnect()
+                            if acc_failed and not acc_success:
+                                update_account_runtime(acc.admin_id, acc.phone, broadcast_status="failed", broadcast_updated_at=_runtime_now())
+                            else:
+                                clear_account_broadcast_status(acc.admin_id, acc.phone)
+
+        await asyncio.gather(*(run_account(acc) for acc in accounts))
+
+        if should_keep_running():
+            now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            log_lines = [f"Round {round_num} | {now}", f"Sent: {len(round_success)}"]
+            if round_success:
+                log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
+            if round_failed:
+                log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
+            if notify_chat_id is not None and not log_dest:
+                try:
+                    await bot.send_message(notify_chat_id, "\n".join(log_lines))
+                except Exception:
+                    pass
+            remaining_after_round = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
+            if not remaining_after_round:
+                reset_broadcast_items_for_next_round(job["job_id"])
+            if round_delay_max > 0:
+                await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
+            else:
+                await asyncio.sleep(1)
+        else:
+            break
+
+    remaining = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
+    final_status = "completed" if not remaining else "interrupted"
+    update_broadcast_job(job["job_id"], status=final_status, completed_at=_runtime_now())
+    for acc in accounts:
+        clear_account_broadcast_status(acc.admin_id, acc.phone)
+    if notify_chat_id is not None:
+        await bot.send_message(notify_chat_id, t("broadcast_stopped", uid), reply_markup=_main_kb(uid))
+
+
 async def _start_broadcast(message: Message, uid: int) -> None:
     """Start the continuous broadcast loop."""
-    from datetime import datetime, timezone
-
     st = _state.get(uid, {})
     bl = get_list(uid, st.get("list", ""))
     accounts = get_accounts(uid)
@@ -1361,11 +1676,9 @@ async def _start_broadcast(message: Message, uid: int) -> None:
     group_delay_min, group_delay_max = st.get("group_delay", st.get("delay", (3.0, 10.0)))
     round_delay_min, round_delay_max = st.get("round_delay", (0.0, 0.0))
 
-    watermark = _watermark_for_user(uid)
     media_bytes = None
     media_filename = None
     has_media = False
-
     saved_texts = st.get("saved_texts") or []
     if "saved_text" in st:
         msg_text = st["saved_text"]
@@ -1394,145 +1707,67 @@ async def _start_broadcast(message: Message, uid: int) -> None:
         _state.pop(uid, None)
         return
 
-    def message_text_for_send() -> str:
-        selected_text = random.choice(saved_texts) if saved_texts else msg_text
-        if watermark:
-            return (selected_text + f"\n\n{watermark}") if selected_text else watermark
-        return selected_text
+    job = _build_broadcast_job_payload(
+        uid,
+        bl.name,
+        msg_text,
+        saved_texts,
+        has_media,
+        media_bytes,
+        media_filename,
+        (group_delay_min, group_delay_max),
+        (round_delay_min, round_delay_max),
+    )
+    create_broadcast_job(job)
+    upsert_broadcast_job_items([
+        {
+            "job_id": job["job_id"],
+            "admin_id": uid,
+            "account_phone": acc.phone,
+            "target": target,
+            "status": "pending",
+            "last_error": None,
+            "attempts": 0,
+            "last_attempted_at": None,
+        }
+        for acc in accounts
+        for target in bl.targets
+    ])
+    now = _runtime_now()
+    for acc in accounts:
+        update_account_runtime(
+            acc.admin_id,
+            acc.phone,
+            broadcast_status="broadcasting",
+            broadcast_job_id=job["job_id"],
+            broadcast_updated_at=now,
+        )
+    await _run_broadcast_job(message.bot, uid, job, accounts, stop_if_state_missing=True, notify_chat_id=message.chat.id)
+    _state.pop(uid, None)
 
-    bot = message.bot
-    log_dest = _log_chat_id()
-    round_num = 0
 
-    while _state.get(uid, {}).get("action") == "broadcasting":
-        round_num += 1
-        round_success = []
-        round_failed = []
-        target_attempt = 0
-        total_targets = len(accounts) * len(bl.targets)
-        target_attempt_lock = asyncio.Lock()
-        round_success_lock = asyncio.Lock()
-        per_admin_sem = asyncio.Semaphore(max(1, load_config().broadcast_per_admin_concurrency))
-        global_sem = _global_broadcast_semaphore()
-
-        async def maybe_delay_after_target() -> None:
-            nonlocal target_attempt
-            async with target_attempt_lock:
-                target_attempt += 1
-                should_delay = (
-                    _state.get(uid, {}).get("action") == "broadcasting"
-                    and target_attempt < total_targets
-                    and group_delay_max > 0
-                )
-            if should_delay:
-                await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
-
-        async def append_success(line: str) -> None:
-            async with round_success_lock:
-                round_success.append(line)
-
-        async def append_failed(line: str) -> None:
-            async with round_success_lock:
-                round_failed.append(line)
-
-        async def run_account(acc: AccountRow) -> None:
-            if _state.get(uid, {}).get("action") != "broadcasting":
-                return
-            async with per_admin_sem:
-                async with global_sem:
-                    acc_success = []
-                    acc_failed = []
-                    client = None
-                    try:
-                        client = _client_from_session(acc.session_string, acc.device_preset, acc)
-                        await client.connect()
-                        await client.get_me()
-                        for target in bl.targets:
-                            if _state.get(uid, {}).get("action") != "broadcasting":
-                                break
-                            try:
-                                entities = await _broadcast_entities_for_target(client, target)
-                                # Auto-verify: detect and click verification buttons
-                                for entity in entities:
-                                    try:
-                                        clicked = await auto_verify_group(client, entity)
-                                        if clicked:
-                                            log.info("[%s] Auto-verified '%s' in %s", acc.alias, clicked, target)
-                                    except Exception:
-                                        pass
-                                sent_count = 0
-                                for entity in entities:
-                                    text_to_send = message_text_for_send()
-                                    if has_media and media_bytes:
-                                        await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
-                                    else:
-                                        await client.send_message(entity, text_to_send, parse_mode="html")
-                                    sent_count += 1
-                                success_line = f"{acc.alias} -> {target}"
-                                if sent_count > 1:
-                                    success_line += f" ({sent_count} chats)"
-                                await append_success(success_line)
-                                acc_success.append(success_line)
-                            except FloodWaitError as fw:
-                                failed_line = f"{acc.alias} -> {target}: {_categorize_broadcast_error(fw)}"
-                                await append_failed(failed_line)
-                                acc_failed.append(failed_line)
-                                await asyncio.sleep(fw.seconds)
-                            except Exception as ex:
-                                failed_line = f"{acc.alias} -> {target}: {_categorize_broadcast_error(ex)}"
-                                await append_failed(failed_line)
-                                acc_failed.append(failed_line)
-                            await maybe_delay_after_target()
-                    except Exception as ex:
-                        if _is_terminal_account_error(ex):
-                            await _remove_invalid_account(bot, uid, acc, _categorize_broadcast_error(ex))
-                            failed_line = f"{acc.alias}: {_categorize_broadcast_error(ex)} (auto-removed)"
-                        else:
-                            failed_line = f"{acc.alias}: {_categorize_broadcast_error(ex)}"
-                        await append_failed(failed_line)
-                        acc_failed.append(failed_line)
-                        await _alert_runtime_error(bot, "broadcast account runtime", ex)
-                    finally:
-                        if client and client.is_connected():
-                            if log_dest and _state.get(uid, {}).get("action") == "broadcasting":
-                                now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                                log_lines = [
-                                    f"Round {round_num} | {now}",
-                                    f"Account: {acc.alias}",
-                                    f"Sent: {len(acc_success)}",
-                                ]
-                                if acc_success:
-                                    log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
-                                if acc_failed:
-                                    log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
-                                try:
-                                    await client.send_message(log_dest, "\n".join(log_lines))
-                                except Exception:
-                                    pass
-                            await client.disconnect()
-
-        await asyncio.gather(*(run_account(acc) for acc in accounts))
-
-        # Log summary per round
-        if _state.get(uid, {}).get("action") == "broadcasting":
-            now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-            log_lines = [f"Round {round_num} | {now}", f"Sent: {len(round_success)}"]
-            if round_success:
-                log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
-            if round_failed:
-                log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
-            log_text = "\n".join(log_lines)
-            if not log_dest:
-                try:
-                    await bot.send_message(uid, log_text)
-                except Exception:
-                    pass
-            if round_delay_max > 0:
-                await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
-            else:
-                await asyncio.sleep(1)
-
-    await bot.send_message(message.chat.id, t("broadcast_stopped", uid), reply_markup=_main_kb(uid))
+async def _recover_broadcast_jobs(bot: Bot) -> None:
+    await asyncio.sleep(15)
+    for job in get_recoverable_broadcast_jobs():
+        job_id = job["job_id"]
+        reset_running_broadcast_items(job_id)
+        update_broadcast_job(job_id, status="running")
+        accounts = get_accounts(job["admin_id"])
+        if not accounts:
+            update_broadcast_job(job_id, status="failed", completed_at=_runtime_now())
+            continue
+        remaining = [item for item in get_broadcast_job_items(job_id) if item.get("status") != "success"]
+        if not remaining:
+            update_broadcast_job(job_id, status="completed", completed_at=_runtime_now())
+            continue
+        try:
+            await bot.send_message(
+                job["admin_id"],
+                f"Resuming broadcast {job_id}\nList: {job['list_name']}\nRemaining: {len(remaining)} item(s)"
+            )
+        except Exception:
+            pass
+        asyncio.create_task(_run_broadcast_job(bot, job["admin_id"], job, accounts, stop_if_state_missing=False, notify_chat_id=job["admin_id"]))
 
 
 async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
@@ -1851,18 +2086,22 @@ async def handle_text(message: Message) -> None:
         parts = text.split(maxsplit=1)
         first = parts[0]
         last = parts[1] if len(parts) > 1 else ""
-        client = _client_from_session(acc.session_string, acc.device_preset, acc)
-        try:
-            await client.connect()
-            await client.get_me()
-            from telethon.tl.functions.account import UpdateProfileRequest
-            await client(UpdateProfileRequest(first_name=first, last_name=last))
-            await message.answer(f"[{alias}] Name: {first} {last}".strip(), reply_markup=_back_kb())
-        except Exception as e:
-            await message.answer(f"Error: {e}", reply_markup=_back_kb())
-        finally:
-            if client.is_connected():
-                await client.disconnect()
+        async with account_lease(uid, acc.phone, purpose="edit_profile", ttl_seconds=60, wait_seconds=10) as lease:
+            if not lease.acquired:
+                await message.answer(f"[{alias}] Account is busy. Try again later.", reply_markup=_back_kb())
+                return
+            client = _client_from_session(acc.session_string, acc.device_preset, acc)
+            try:
+                await client.connect()
+                await client.get_me()
+                from telethon.tl.functions.account import UpdateProfileRequest
+                await client(UpdateProfileRequest(first_name=first, last_name=last))
+                await message.answer(f"[{alias}] Name: {first} {last}".strip(), reply_markup=_back_kb())
+            except Exception as e:
+                await message.answer(f"Error: {e}", reply_markup=_back_kb())
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
 
     # --- Edit bio ---
     elif action == "edit_bio":
@@ -1872,18 +2111,22 @@ async def handle_text(message: Message) -> None:
         if not acc:
             await message.answer("Not found.", reply_markup=_back_kb())
             return
-        client = _client_from_session(acc.session_string, acc.device_preset, acc)
-        try:
-            await client.connect()
-            await client.get_me()
-            from telethon.tl.functions.account import UpdateProfileRequest
-            await client(UpdateProfileRequest(about=text))
-            await message.answer(f"[{alias}] Bio updated.", reply_markup=_back_kb())
-        except Exception as e:
-            await message.answer(f"Error: {e}", reply_markup=_back_kb())
-        finally:
-            if client.is_connected():
-                await client.disconnect()
+        async with account_lease(uid, acc.phone, purpose="edit_profile", ttl_seconds=60, wait_seconds=10) as lease:
+            if not lease.acquired:
+                await message.answer(f"[{alias}] Account is busy. Try again later.", reply_markup=_back_kb())
+                return
+            client = _client_from_session(acc.session_string, acc.device_preset, acc)
+            try:
+                await client.connect()
+                await client.get_me()
+                from telethon.tl.functions.account import UpdateProfileRequest
+                await client(UpdateProfileRequest(about=text))
+                await message.answer(f"[{alias}] Bio updated.", reply_markup=_back_kb())
+            except Exception as e:
+                await message.answer(f"Error: {e}", reply_markup=_back_kb())
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
 
     # --- Edit username ---
     elif action == "edit_username":
@@ -1893,18 +2136,22 @@ async def handle_text(message: Message) -> None:
         if not acc:
             await message.answer("Not found.", reply_markup=_back_kb())
             return
-        client = _client_from_session(acc.session_string, acc.device_preset, acc)
-        try:
-            await client.connect()
-            await client.get_me()
-            from telethon.tl.functions.account import UpdateUsernameRequest
-            await client(UpdateUsernameRequest(username=text.lstrip("@")))
-            await message.answer(f"[{alias}] Username: @{text.lstrip('@')}", reply_markup=_back_kb())
-        except Exception as e:
-            await message.answer(f"Error: {e}", reply_markup=_back_kb())
-        finally:
-            if client.is_connected():
-                await client.disconnect()
+        async with account_lease(uid, acc.phone, purpose="edit_profile", ttl_seconds=60, wait_seconds=10) as lease:
+            if not lease.acquired:
+                await message.answer(f"[{alias}] Account is busy. Try again later.", reply_markup=_back_kb())
+                return
+            client = _client_from_session(acc.session_string, acc.device_preset, acc)
+            try:
+                await client.connect()
+                await client.get_me()
+                from telethon.tl.functions.account import UpdateUsernameRequest
+                await client(UpdateUsernameRequest(username=text.lstrip("@")))
+                await message.answer(f"[{alias}] Username: @{text.lstrip('@')}", reply_markup=_back_kb())
+            except Exception as e:
+                await message.answer(f"Error: {e}", reply_markup=_back_kb())
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
 
     # --- Auto Reply ---
     elif action == "auto_reply_pick":
@@ -2120,17 +2367,21 @@ async def handle_text(message: Message) -> None:
             await message.answer("Not found.", reply_markup=_main_kb())
             return
         if text == "Logout (revoke)":
-            client = _client_from_session(acc.session_string, acc.device_preset, acc)
-            try:
-                await client.connect()
-                await client.log_out()
-            except Exception:
-                pass
-            finally:
-                if client.is_connected():
-                    await client.disconnect()
-            remove_account(uid, acc.phone)
-            await message.answer(f"[{alias}] Logged out and removed.", reply_markup=_main_kb())
+            async with account_lease(uid, acc.phone, purpose="logout", ttl_seconds=60, wait_seconds=10) as lease:
+                if not lease.acquired:
+                    await message.answer(f"[{alias}] Account is busy. Try again later.", reply_markup=_main_kb())
+                    return
+                client = _client_from_session(acc.session_string, acc.device_preset, acc)
+                try:
+                    await client.connect()
+                    await client.log_out()
+                except Exception:
+                    pass
+                finally:
+                    if client.is_connected():
+                        await client.disconnect()
+                remove_account(uid, acc.phone)
+                await message.answer(f"[{alias}] Logged out and removed.", reply_markup=_main_kb())
         elif text == "Remove only":
             remove_account(uid, acc.phone)
             await message.answer(f"[{alias}] Removed.", reply_markup=_main_kb())
@@ -2190,6 +2441,8 @@ async def _finish_login(message: Message, admin_id: int) -> None:
         device_preset=state["preset"].key,
         api_credential_index=api_credential_index,
         proxy_index=proxy_index,
+        connected_ip=(load_config().proxy_for_index(proxy_index).host if load_config().proxy_for_index(proxy_index) else ""),
+        last_connected_at=_runtime_now(),
     )
     add_account(acc)
     await message.answer(
@@ -2211,5 +2464,6 @@ async def run_bot() -> None:
     dp.include_router(router)
     asyncio.create_task(_auto_health_check_loop(bot))
     asyncio.create_task(_auto_reply_reconcile_loop())
+    asyncio.create_task(_recover_broadcast_jobs(bot))
     log.info("Bot starting...")
     await dp.start_polling(bot)

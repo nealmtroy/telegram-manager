@@ -24,6 +24,7 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 
+from .account_locks import acquire_persistent_lease, release_persistent_lease
 from .config import load_config
 from .db import AccountRow, get_all_accounts, remove_account
 from .device_presets import get_preset
@@ -33,6 +34,8 @@ log = get_logger("auto_reply")
 
 # (admin_id, phone) -> running client
 _active_clients: Dict[Tuple[int, str], TelegramClient] = {}
+# (admin_id, phone) -> persistent lease context
+_active_leases: Dict[Tuple[int, str], object] = {}
 # (admin_id, phone) -> set of user_ids already replied to this session
 _already_replied: Dict[Tuple[int, str], Set[int]] = {}
 
@@ -95,6 +98,18 @@ async def _start_client(acc: AccountRow) -> bool:
     if not reply_text:
         return False
 
+    lease_ctx, lease = await acquire_persistent_lease(
+        acc.admin_id,
+        acc.phone,
+        purpose="auto_reply",
+        ttl_seconds=300,
+        wait_seconds=0,
+    )
+    if not lease.acquired:
+        log.debug("auto_reply: account busy/locked for %s", acc.alias)
+        await release_persistent_lease(lease_ctx)
+        return False
+
     client = _build_client(acc)
 
     try:
@@ -103,6 +118,7 @@ async def _start_client(acc: AccountRow) -> bool:
         if me is None:
             log.warning("auto_reply: session not authorized for %s", acc.alias)
             await client.disconnect()
+            await release_persistent_lease(lease_ctx)
             return False
     except Exception as exc:
         if _is_terminal(exc):
@@ -119,6 +135,7 @@ async def _start_client(acc: AccountRow) -> bool:
             await client.disconnect()
         except Exception:
             pass
+        await release_persistent_lease(lease_ctx)
         return False
 
     replied_set: Set[int] = set()
@@ -152,6 +169,7 @@ async def _start_client(acc: AccountRow) -> bool:
             log.debug("auto_reply: failed to send to %s from %s", sender_id, acc.alias, exc_info=True)
 
     _active_clients[key] = client
+    _active_leases[key] = lease_ctx
     log.info("auto_reply: started client for %s", acc.alias)
     return True
 
@@ -159,12 +177,14 @@ async def _start_client(acc: AccountRow) -> bool:
 async def _stop_client(key: Tuple[int, str]) -> None:
     """Disconnect and remove a client from the active pool."""
     client = _active_clients.pop(key, None)
+    lease_ctx = _active_leases.pop(key, None)
     _already_replied.pop(key, None)
     if client and client.is_connected():
         try:
             await client.disconnect()
         except Exception:
             pass
+    await release_persistent_lease(lease_ctx)
     log.info("auto_reply: stopped client for key=%s", key)
 
 

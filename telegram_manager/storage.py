@@ -45,7 +45,7 @@ class Account:
     username: Optional[str] = None
     user_id: Optional[int] = None
     is_2fa: bool = False
-    device_preset: str = "default"  # key into DEVICE_PRESETS
+    device_preset: str = "iphone_17_pro_max"  # key into DEVICE_PRESETS
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

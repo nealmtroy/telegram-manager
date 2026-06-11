@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from supabase import create_client, Client
 
@@ -54,6 +54,31 @@ def _account_optional_columns() -> set[str]:
         columns.add("auto_reply_text")
     except Exception:
         pass
+    try:
+        db.table("accounts").select("connected_ip").limit(1).execute()
+        columns.add("connected_ip")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("last_connected_at").limit(1).execute()
+        columns.add("last_connected_at")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("broadcast_status").limit(1).execute()
+        columns.add("broadcast_status")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("broadcast_job_id").limit(1).execute()
+        columns.add("broadcast_job_id")
+    except Exception:
+        pass
+    try:
+        db.table("accounts").select("broadcast_updated_at").limit(1).execute()
+        columns.add("broadcast_updated_at")
+    except Exception:
+        pass
     _ACCOUNT_OPTIONAL_COLUMNS = columns
     return _ACCOUNT_OPTIONAL_COLUMNS
 
@@ -72,11 +97,16 @@ class AccountRow:
     username: Optional[str] = None
     user_id: Optional[int] = None
     is_2fa: bool = False
-    device_preset: str = "random"
+    device_preset: str = "iphone_17_pro_max"
     api_credential_index: Optional[int] = None
     proxy_index: Optional[int] = None
     auto_reply_enabled: bool = False
     auto_reply_text: str = ""
+    connected_ip: str = ""
+    last_connected_at: Optional[str] = None
+    broadcast_status: str = ""
+    broadcast_job_id: Optional[str] = None
+    broadcast_updated_at: Optional[str] = None
 
     @property
     def display_name(self) -> str:
@@ -169,6 +199,16 @@ def add_account(acc: AccountRow) -> None:
         payload["auto_reply_enabled"] = acc.auto_reply_enabled
     if "auto_reply_text" in optional_columns:
         payload["auto_reply_text"] = acc.auto_reply_text
+    if "connected_ip" in optional_columns:
+        payload["connected_ip"] = acc.connected_ip
+    if "last_connected_at" in optional_columns:
+        payload["last_connected_at"] = acc.last_connected_at
+    if "broadcast_status" in optional_columns:
+        payload["broadcast_status"] = acc.broadcast_status
+    if "broadcast_job_id" in optional_columns:
+        payload["broadcast_job_id"] = acc.broadcast_job_id
+    if "broadcast_updated_at" in optional_columns:
+        payload["broadcast_updated_at"] = acc.broadcast_updated_at
     db.table("accounts").upsert(payload, on_conflict="admin_id,phone").execute()
 
 
@@ -191,11 +231,16 @@ def get_accounts(admin_id: int) -> List[AccountRow]:
         username=row.get("username"),
         user_id=row.get("user_id"),
         is_2fa=row.get("is_2fa", False),
-        device_preset=row.get("device_preset", "random"),
+        device_preset=row.get("device_preset", "iphone_17_pro_max"),
         api_credential_index=row.get("api_credential_index"),
         proxy_index=row.get("proxy_index"),
         auto_reply_enabled=row.get("auto_reply_enabled", False),
         auto_reply_text=row.get("auto_reply_text", "") or "",
+        connected_ip=row.get("connected_ip", "") or "",
+        last_connected_at=row.get("last_connected_at"),
+        broadcast_status=row.get("broadcast_status", "") or "",
+        broadcast_job_id=row.get("broadcast_job_id"),
+        broadcast_updated_at=row.get("broadcast_updated_at"),
     ) for row in r.data]
 
 
@@ -212,11 +257,16 @@ def get_all_accounts() -> List[AccountRow]:
         username=row.get("username"),
         user_id=row.get("user_id"),
         is_2fa=row.get("is_2fa", False),
-        device_preset=row.get("device_preset", "random"),
+        device_preset=row.get("device_preset", "iphone_17_pro_max"),
         api_credential_index=row.get("api_credential_index"),
         proxy_index=row.get("proxy_index"),
         auto_reply_enabled=row.get("auto_reply_enabled", False),
         auto_reply_text=row.get("auto_reply_text", "") or "",
+        connected_ip=row.get("connected_ip", "") or "",
+        last_connected_at=row.get("last_connected_at"),
+        broadcast_status=row.get("broadcast_status", "") or "",
+        broadcast_job_id=row.get("broadcast_job_id"),
+        broadcast_updated_at=row.get("broadcast_updated_at"),
     ) for row in r.data]
 
 
@@ -266,6 +316,168 @@ def update_auto_reply(admin_id: int, phone: str, enabled: bool, text: str = "") 
         "auto_reply_enabled": enabled,
         "auto_reply_text": text if enabled else "",
     }).eq("admin_id", admin_id).eq("phone", phone).execute()
+
+
+def update_account_runtime(
+    admin_id: int,
+    phone: str,
+    *,
+    connected_ip: Optional[str] = None,
+    last_connected_at: Optional[str] = None,
+    broadcast_status: Optional[str] = None,
+    broadcast_job_id: Optional[str] = None,
+    broadcast_updated_at: Optional[str] = None,
+) -> None:
+    optional_columns = _account_optional_columns()
+    payload: dict[str, Any] = {}
+    if connected_ip is not None and "connected_ip" in optional_columns:
+        payload["connected_ip"] = connected_ip
+    if last_connected_at is not None and "last_connected_at" in optional_columns:
+        payload["last_connected_at"] = last_connected_at
+    if broadcast_status is not None and "broadcast_status" in optional_columns:
+        payload["broadcast_status"] = broadcast_status
+    if "broadcast_job_id" in optional_columns and broadcast_job_id is not None:
+        payload["broadcast_job_id"] = broadcast_job_id
+    if broadcast_updated_at is not None and "broadcast_updated_at" in optional_columns:
+        payload["broadcast_updated_at"] = broadcast_updated_at
+    if not payload:
+        return
+    db = _get_client()
+    db.table("accounts").update(payload).eq("admin_id", admin_id).eq("phone", phone).execute()
+
+
+def clear_account_broadcast_status(admin_id: int, phone: str) -> None:
+    optional_columns = _account_optional_columns()
+    payload: dict[str, Any] = {}
+    if "broadcast_status" in optional_columns:
+        payload["broadcast_status"] = ""
+    if "broadcast_job_id" in optional_columns:
+        payload["broadcast_job_id"] = None
+    if "broadcast_updated_at" in optional_columns:
+        payload["broadcast_updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not payload:
+        return
+    db = _get_client()
+    db.table("accounts").update(payload).eq("admin_id", admin_id).eq("phone", phone).execute()
+
+
+def create_broadcast_job(payload: dict[str, Any]) -> None:
+    db = _get_client()
+    db.table("broadcast_jobs").upsert(payload, on_conflict="job_id").execute()
+
+
+def update_broadcast_job(job_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    db = _get_client()
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    db.table("broadcast_jobs").update(fields).eq("job_id", job_id).execute()
+
+
+def get_broadcast_job(job_id: str) -> Optional[dict[str, Any]]:
+    db = _get_client()
+    r = db.table("broadcast_jobs").select("*").eq("job_id", job_id).limit(1).execute()
+    return r.data[0] if r.data else None
+
+
+def get_recoverable_broadcast_jobs() -> list[dict[str, Any]]:
+    db = _get_client()
+    r = db.table("broadcast_jobs").select("*").in_("status", ["running", "interrupted"]).order("started_at").execute()
+    return r.data or []
+
+
+def upsert_broadcast_job_items(items: list[dict[str, Any]]) -> None:
+    if not items:
+        return
+    db = _get_client()
+    db.table("broadcast_job_items").upsert(items, on_conflict="job_id,account_phone,target").execute()
+
+
+def get_broadcast_job_items(job_id: str) -> list[dict[str, Any]]:
+    db = _get_client()
+    r = db.table("broadcast_job_items").select("*").eq("job_id", job_id).order("account_phone").order("target").execute()
+    return r.data or []
+
+
+def update_broadcast_job_item(
+    job_id: str,
+    account_phone: str,
+    target: str,
+    *,
+    status: str,
+    last_error: Optional[str] = None,
+    attempts_increment: bool = False,
+) -> None:
+    db = _get_client()
+    current_attempts = 0
+    if attempts_increment:
+        r = db.table("broadcast_job_items").select("attempts").eq("job_id", job_id).eq("account_phone", account_phone).eq("target", target).limit(1).execute()
+        if r.data:
+            current_attempts = int(r.data[0].get("attempts") or 0)
+    payload = {
+        "status": status,
+        "last_error": last_error,
+        "last_attempted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if attempts_increment:
+        payload["attempts"] = current_attempts + 1
+    db.table("broadcast_job_items").update(payload).eq("job_id", job_id).eq("account_phone", account_phone).eq("target", target).execute()
+
+
+def reset_running_broadcast_items(job_id: str) -> None:
+    db = _get_client()
+    db.table("broadcast_job_items").update({
+        "status": "pending",
+        "last_error": "Recovered after restart while item was running",
+        "last_attempted_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("job_id", job_id).eq("status", "running").execute()
+
+
+def reset_broadcast_items_for_next_round(job_id: str) -> None:
+    db = _get_client()
+    db.table("broadcast_job_items").update({
+        "status": "pending",
+        "last_error": None,
+        "last_attempted_at": None,
+    }).eq("job_id", job_id).execute()
+
+
+def acquire_account_lock(admin_id: int, phone: str, holder: str, purpose: str, ttl_seconds: int) -> bool:
+    db = _get_client()
+    r = db.rpc("acquire_account_lock", {
+        "p_admin_id": admin_id,
+        "p_phone": phone,
+        "p_holder": holder,
+        "p_purpose": purpose,
+        "p_ttl_seconds": ttl_seconds,
+    }).execute()
+    return bool(r.data)
+
+
+def heartbeat_account_lock(admin_id: int, phone: str, holder: str) -> bool:
+    db = _get_client()
+    r = db.rpc("heartbeat_account_lock", {
+        "p_admin_id": admin_id,
+        "p_phone": phone,
+        "p_holder": holder,
+    }).execute()
+    return bool(r.data)
+
+
+def release_account_lock(admin_id: int, phone: str, holder: str) -> bool:
+    db = _get_client()
+    r = db.rpc("release_account_lock", {
+        "p_admin_id": admin_id,
+        "p_phone": phone,
+        "p_holder": holder,
+    }).execute()
+    return bool(r.data)
+
+
+def cleanup_stale_account_locks() -> int:
+    db = _get_client()
+    r = db.rpc("cleanup_stale_account_locks").execute()
+    return int(r.data or 0)
 
 
 # ---------------------------------------------------------------------------
