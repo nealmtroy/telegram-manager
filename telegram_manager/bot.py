@@ -709,6 +709,16 @@ def _profile_value(value) -> str:
     return str(value) if value else "-"
 
 
+def _normalize_phone_input(value: str) -> str:
+    phone = (value or "").strip()
+    if not phone:
+        return ""
+    if phone.startswith("+"):
+        return phone
+    digits = re.sub(r"\D", "", phone)
+    return f"+{digits}" if digits else phone
+
+
 def _main_menu_text(user, uid: int, accounts: list, status: str) -> str:
     return t(
         "main_menu",
@@ -1925,6 +1935,65 @@ async def _dispatch_menu(message: Message, uid: int, action: str) -> None:
         await _reply(message, uid, t("choose_lang", uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
+async def _start_login_for_phone(message: Message, uid: int, phone: str) -> None:
+    phone = _normalize_phone_input(phone)
+    if not phone:
+        await message.answer("Nomor tidak terbaca. Ketik nomor manual, contoh: +628123456789", reply_markup=_back_kb())
+        return
+    cfg = load_config()
+    if not cfg.has_own_api:
+        await message.answer("API credentials not configured.", reply_markup=_back_kb())
+        _state.pop(uid, None)
+        return
+    client, preset = _new_client("random")
+    await client.connect()
+    try:
+        sent = await client.send_code_request(phone)
+    except FloodWaitError as e:
+        await client.disconnect()
+        await message.answer(f"Flood wait: {e.seconds}s. Try later.", reply_markup=_back_kb())
+        _state.pop(uid, None)
+        return
+    except Exception as e:
+        await client.disconnect()
+        await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
+        _state.pop(uid, None)
+        return
+    _state[uid] = {
+        "action": "login_code",
+        "phone": phone,
+        "phone_code_hash": sent.phone_code_hash,
+        "client": client,
+        "preset": preset,
+    }
+    sent_msg = await message.answer(
+        f"Code sent to {phone}\nDevice: {preset.device_model}\n\n"
+        "⚠️ PENTING: Ketik kode PAKAI SPASI\n"
+        "Contoh: 3 6 8 1 5\n\n"
+        "Jangan ketik tanpa spasi, Telegram akan otomatis membatalkan kode!"
+    )
+    _state[uid]["code_sent_msg"] = sent_msg.message_id
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@router.message(F.contact)
+async def handle_contact(message: Message) -> None:
+    uid = message.from_user.id
+    if not is_registered_admin(uid):
+        return
+    state = _state.get(uid)
+    if not state or state.get("action") != "login_phone":
+        return
+    contact = message.contact
+    if contact.user_id and contact.user_id != uid:
+        await message.answer("Nomor yang dikirim bukan akun Telegram kamu. Kirim kontak sendiri atau ketik nomor manual.", reply_markup=_back_kb())
+        return
+    await _start_login_for_phone(message, uid, contact.phone_number)
+
+
 @router.message(F.text)
 async def handle_text(message: Message) -> None:
     uid = message.from_user.id
@@ -1951,44 +2020,8 @@ async def handle_text(message: Message) -> None:
 
     # --- Login flow ---
     if action == "login_phone":
-        cfg = load_config()
-        if not cfg.has_own_api:
-            await message.answer("API credentials not configured.", reply_markup=_back_kb())
-            _state.pop(uid, None)
-            return
-        client, preset = _new_client("random")
-        await client.connect()
-        try:
-            sent = await client.send_code_request(text)
-        except FloodWaitError as e:
-            await client.disconnect()
-            await message.answer(f"Flood wait: {e.seconds}s. Try later.", reply_markup=_back_kb())
-            _state.pop(uid, None)
-            return
-        except Exception as e:
-            await client.disconnect()
-            await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
-            _state.pop(uid, None)
-            return
-        _state[uid] = {
-            "action": "login_code",
-            "phone": text,
-            "phone_code_hash": sent.phone_code_hash,
-            "client": client,
-            "preset": preset,
-        }
-        sent_msg = await message.answer(
-            f"Code sent to {text}\nDevice: {preset.device_model}\n\n"
-            "⚠️ PENTING: Ketik kode PAKAI SPASI\n"
-            "Contoh: 3 6 8 1 5\n\n"
-            "Jangan ketik tanpa spasi, Telegram akan otomatis membatalkan kode!"
-        )
-        _state[uid]["code_sent_msg"] = sent_msg.message_id
-        # Auto-delete user's phone number message
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await _start_login_for_phone(message, uid, text)
+        return
 
     elif action == "login_code":
         client = state["client"]
