@@ -509,6 +509,31 @@ def _categorize_broadcast_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
+def _is_permanent_broadcast_error(exc: BaseException) -> bool:
+    return isinstance(
+        exc,
+        (
+            UserBannedInChannelError,
+            ChatWriteForbiddenError,
+            ChatAdminRequiredError,
+            ChatSendPlainTextForbiddenError,
+            MessageActionForbiddenError,
+            ChannelPrivateError,
+            ChannelInvalidError,
+            ChatIdInvalidError,
+            PeerIdInvalidError,
+            UsernameNotOccupiedError,
+            UsernameInvalidError,
+            InviteHashExpiredError,
+            InviteHashInvalidError,
+            UserRestrictedError,
+            UserPrivacyRestrictedError,
+            UserIsBlockedError,
+            InputUserDeactivatedError,
+        ),
+    )
+
+
 def _log_chat_id():
     """Get log destination from env. Can be user_id (int) or @username."""
     raw = os.getenv("LOG_CHAT_ID", "")
@@ -879,13 +904,19 @@ def _accounts_kb(admin_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
-def _auto_reply_account_label(acc: AccountRow) -> str:
+def _account_identity_label(acc: AccountRow) -> str:
     identity = f"@{acc.username}" if acc.username else acc.display_name
+    if identity == acc.alias and re.fullmatch(r"\+?\d{6,}", acc.alias or ""):
+        identity = "account"
     if not identity:
-        identity = acc.alias
+        identity = "account"
     if acc.user_id:
         return f"{acc.user_id} {identity}"
     return identity
+
+
+def _auto_reply_account_label(acc: AccountRow) -> str:
+    return _account_identity_label(acc)
 
 
 def _auto_reply_accounts_kb(admin_id: int) -> tuple[ReplyKeyboardMarkup, dict[str, str]]:
@@ -1560,6 +1591,16 @@ async def _run_broadcast_job(
         return bool(current and current.get("status") == "running")
 
     while should_keep_running():
+        job_items = get_broadcast_job_items(job["job_id"])
+        eligible_items = [item for item in job_items if item.get("status") != "permanent_failed"]
+        if not eligible_items:
+            break
+
+        reset_broadcast_items_for_next_round(job["job_id"])
+        job_items = get_broadcast_job_items(job["job_id"])
+        eligible_items = [item for item in job_items if item.get("status") != "permanent_failed"]
+        remaining_items = list(eligible_items)
+
         round_num += 1
         update_broadcast_job(job["job_id"], round_num=round_num, status="running")
         round_success = []
@@ -1569,19 +1610,18 @@ async def _run_broadcast_job(
         round_lock = asyncio.Lock()
         per_admin_sem = asyncio.Semaphore(max(1, load_config().broadcast_per_admin_concurrency))
         global_sem = _global_broadcast_semaphore()
-        remaining_items = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
-        if not remaining_items:
-            break
         items_by_phone: dict[str, list[dict]] = {}
         for item in remaining_items:
             items_by_phone.setdefault(item["account_phone"], []).append(item)
-        total_targets = len(remaining_items)
+        total_targets = len({item["target"] for item in eligible_items})
+        cycle_targets = len({item["target"] for item in remaining_items})
+        total_account_targets = len(remaining_items)
 
         async def maybe_delay_after_target() -> None:
             nonlocal target_attempt
             async with target_attempt_lock:
                 target_attempt += 1
-                should_delay = should_keep_running() and target_attempt < total_targets and group_delay_max > 0
+                should_delay = should_keep_running() and target_attempt < total_account_targets and group_delay_max > 0
             if should_delay:
                 await asyncio.sleep(random.uniform(group_delay_min, group_delay_max))
 
@@ -1603,7 +1643,7 @@ async def _run_broadcast_job(
                         if not lease.acquired:
                             for item in account_items:
                                 update_broadcast_job_item(job["job_id"], acc.phone, item["target"], status="failed", last_error="Account busy/locked")
-                            await append_failed(f"{acc.alias}: busy/locked, skipped this round")
+                            await append_failed(f"{_account_identity_label(acc)}: busy/locked, skipped this round")
                             return
                         acc_success = []
                         acc_failed = []
@@ -1637,7 +1677,7 @@ async def _run_broadcast_job(
                                             await client.send_message(entity, text_to_send, parse_mode="html")
                                         sent_count += 1
                                     update_broadcast_job_item(job["job_id"], acc.phone, target, status="success", last_error=None)
-                                    success_line = f"{acc.alias} -> {target}"
+                                    success_line = f"{_account_identity_label(acc)} -> {target}"
                                     if sent_count > 1:
                                         success_line += f" ({sent_count} chats)"
                                     await append_success(success_line)
@@ -1645,14 +1685,17 @@ async def _run_broadcast_job(
                                 except FloodWaitError as fw:
                                     detail = _categorize_broadcast_error(fw)
                                     update_broadcast_job_item(job["job_id"], acc.phone, target, status="failed", last_error=detail)
-                                    failed_line = f"{acc.alias} -> {target}: {detail}"
+                                    failed_line = f"{_account_identity_label(acc)} -> {target}: {detail} (retry)"
                                     await append_failed(failed_line)
                                     acc_failed.append(failed_line)
                                     await asyncio.sleep(fw.seconds)
                                 except Exception as ex:
                                     detail = _categorize_broadcast_error(ex)
-                                    update_broadcast_job_item(job["job_id"], acc.phone, target, status="failed", last_error=detail)
-                                    failed_line = f"{acc.alias} -> {target}: {detail}"
+                                    permanent = _is_permanent_broadcast_error(ex)
+                                    status = "permanent_failed" if permanent else "failed"
+                                    update_broadcast_job_item(job["job_id"], acc.phone, target, status=status, last_error=detail)
+                                    suffix = "permanent, skipped next rounds" if permanent else "retry"
+                                    failed_line = f"{_account_identity_label(acc)} -> {target}: {detail} ({suffix})"
                                     await append_failed(failed_line)
                                     acc_failed.append(failed_line)
                                     if isinstance(ex, AuthKeyDuplicatedError):
@@ -1660,7 +1703,7 @@ async def _run_broadcast_job(
                                             bot,
                                             "Auth key duplication detected\n"
                                             f"Admin: {uid}\n"
-                                            f"Account: {acc.alias} ({acc.phone})\n"
+                                            f"Account: {_account_identity_label(acc)}\n"
                                             f"Proxy/IP: {acc.connected_ip or _proxy_host_for_account(acc) or '-'}\n"
                                             f"Last connected: {acc.last_connected_at or '-'}"
                                         )
@@ -1675,9 +1718,9 @@ async def _run_broadcast_job(
                                     detail,
                                     notify_admin=not isinstance(ex, UserDeactivatedBanError),
                                 )
-                                failed_line = f"{acc.alias}: {detail} (auto-removed)"
+                                failed_line = f"{_account_identity_label(acc)}: {detail} (auto-removed)"
                             else:
-                                failed_line = f"{acc.alias}: {detail}"
+                                failed_line = f"{_account_identity_label(acc)}: {detail}"
                             update_account_runtime(acc.admin_id, acc.phone, broadcast_status="failed", broadcast_updated_at=_runtime_now())
                             await append_failed(failed_line)
                             acc_failed.append(failed_line)
@@ -1688,13 +1731,15 @@ async def _run_broadcast_job(
                                     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
                                     log_lines = [
                                         f"Round {round_num} | {now}",
-                                        f"Account: {acc.alias}",
-                                        f"Sent: {len(acc_success)}",
+                                        f"List: {list_name}",
+                                        f"Total groups: {total_targets} | Active this round: {cycle_targets}",
+                                        f"Account: {_account_identity_label(acc)}",
+                                        f"Sent: {len(acc_success)} | Failed: {len(acc_failed)}",
                                     ]
                                     if acc_success:
                                         log_lines.append("Success:\n  " + "\n  ".join(acc_success[:30]))
                                     if acc_failed:
-                                        log_lines.append(f"Failed: {len(acc_failed)}\n  " + "\n  ".join(acc_failed))
+                                        log_lines.append("Failed:\n  " + "\n  ".join(acc_failed))
                                     try:
                                         await client.send_message(log_dest, "\n".join(log_lines))
                                     except Exception:
@@ -1709,19 +1754,23 @@ async def _run_broadcast_job(
 
         if should_keep_running():
             now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-            log_lines = [f"Round {round_num} | {now}", f"Sent: {len(round_success)}"]
+            current_items = get_broadcast_job_items(job["job_id"])
+            permanent_count = len([item for item in current_items if item.get("status") == "permanent_failed"])
+            log_lines = [
+                f"Round {round_num} | {now}",
+                f"List: {list_name}",
+                f"Total groups: {total_targets} | Active this round: {cycle_targets}",
+                f"Sent: {len(round_success)} | Failed: {len(round_failed)} | Permanent skipped: {permanent_count}",
+            ]
             if round_success:
                 log_lines.append("Success:\n  " + "\n  ".join(round_success[:30]))
             if round_failed:
-                log_lines.append(f"Failed: {len(round_failed)}\n  " + "\n  ".join(round_failed))
+                log_lines.append("Failed:\n  " + "\n  ".join(round_failed))
             if notify_chat_id is not None and not log_dest:
                 try:
                     await bot.send_message(notify_chat_id, "\n".join(log_lines))
                 except Exception:
                     pass
-            remaining_after_round = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
-            if not remaining_after_round:
-                reset_broadcast_items_for_next_round(job["job_id"])
             if round_delay_max > 0:
                 await asyncio.sleep(random.uniform(round_delay_min, round_delay_max))
             else:
@@ -1729,7 +1778,7 @@ async def _run_broadcast_job(
         else:
             break
 
-    remaining = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") != "success"]
+    remaining = [item for item in get_broadcast_job_items(job["job_id"]) if item.get("status") not in ("success", "permanent_failed")]
     final_status = "completed" if not remaining else "interrupted"
     update_broadcast_job(job["job_id"], status=final_status, completed_at=_runtime_now())
     for acc in accounts:
@@ -1830,7 +1879,7 @@ async def _recover_broadcast_jobs(bot: Bot) -> None:
         if not accounts:
             update_broadcast_job(job_id, status="failed", completed_at=_runtime_now())
             continue
-        remaining = [item for item in get_broadcast_job_items(job_id) if item.get("status") != "success"]
+        remaining = [item for item in get_broadcast_job_items(job_id) if item.get("status") != "permanent_failed"]
         if not remaining:
             update_broadcast_job(job_id, status="completed", completed_at=_runtime_now())
             continue

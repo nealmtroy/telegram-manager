@@ -439,7 +439,7 @@ def reset_broadcast_items_for_next_round(job_id: str) -> None:
         "status": "pending",
         "last_error": None,
         "last_attempted_at": None,
-    }).eq("job_id", job_id).execute()
+    }).eq("job_id", job_id).neq("status", "permanent_failed").execute()
 
 
 def acquire_account_lock(admin_id: int, phone: str, holder: str, purpose: str, ttl_seconds: int) -> bool:
