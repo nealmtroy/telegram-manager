@@ -612,16 +612,32 @@ def _is_terminal_account_error(exc: BaseException) -> bool:
     return isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedBanError))
 
 
-async def _remove_invalid_account(bot: Bot, admin_id: int, acc: AccountRow, reason: str) -> None:
+async def _remove_invalid_account(
+    bot: Bot,
+    admin_id: int,
+    acc: AccountRow,
+    reason: str,
+    *,
+    notify_admin: bool = True,
+) -> None:
     removed = remove_account(admin_id, acc.phone)
     if not removed:
         return
     detail = f"[{acc.alias}] removed from account list: {reason}"
     log.warning("Auto-removed invalid account admin=%s alias=%s reason=%s", admin_id, acc.alias, reason)
-    try:
-        await bot.send_message(admin_id, f"⚠️ Account auto-removed\n{detail}")
-    except Exception:
-        log.exception("Failed to notify admin about auto-removed account")
+    if notify_admin:
+        username = f"@{acc.username}" if acc.username else "-"
+        try:
+            await bot.send_message(
+                admin_id,
+                "⚠️ Invalid session auto-removed\n"
+                f"Account: {acc.alias}\n"
+                f"Username: {username}\n"
+                f"Reason: {reason}\n\n"
+                "Session akun ini sudah tidak valid, jadi akun otomatis dihapus dari daftar akun.",
+            )
+        except Exception:
+            log.exception("Failed to notify admin about auto-removed account")
     await _notify_owners(bot, f"Invalid account auto-removed\nAdmin: {admin_id}\nAccount: {acc.alias}\nReason: {reason}")
 
 
@@ -637,7 +653,13 @@ async def _check_account_health(bot: Bot, admin_id: int, acc: AccountRow) -> Non
             _mark_account_connected(acc)
         except Exception as exc:
             if _is_terminal_account_error(exc):
-                await _remove_invalid_account(bot, admin_id, acc, type(exc).__name__)
+                await _remove_invalid_account(
+                    bot,
+                    admin_id,
+                    acc,
+                    type(exc).__name__,
+                    notify_admin=not isinstance(exc, UserDeactivatedBanError),
+                )
             else:
                 await _alert_runtime_error(bot, f"auto account health check admin={admin_id} account={acc.alias}", exc)
         finally:
@@ -1613,7 +1635,13 @@ async def _run_broadcast_job(
                         except Exception as ex:
                             detail = _categorize_broadcast_error(ex)
                             if _is_terminal_account_error(ex):
-                                await _remove_invalid_account(bot, uid, acc, detail)
+                                await _remove_invalid_account(
+                                    bot,
+                                    uid,
+                                    acc,
+                                    detail,
+                                    notify_admin=not isinstance(ex, UserDeactivatedBanError),
+                                )
                                 failed_line = f"{acc.alias}: {detail} (auto-removed)"
                             else:
                                 failed_line = f"{acc.alias}: {detail}"
