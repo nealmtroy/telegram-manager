@@ -1295,6 +1295,7 @@ async def cb_lo(cq: CallbackQuery) -> None:
         await cq.message.edit_text("Not found.")
         return
 
+    result_message = f"[{alias}] Logged out and removed from the account list."
     async with account_lease(uid, acc.phone, purpose="logout", ttl_seconds=60, wait_seconds=10) as lease:
         if not lease.acquired:
             await cq.message.edit_text(f"[{alias}] Account is busy. Try again later.")
@@ -1304,17 +1305,20 @@ async def cb_lo(cq: CallbackQuery) -> None:
             await client.connect()
             await client.log_out()
         except Exception as exc:
-            await cq.message.edit_text(f"[{alias}] Logout failed: {type(exc).__name__}: {exc}")
-            return
+            if _is_terminal_account_error(exc):
+                result_message = f"[{alias}] Session was already invalid and has been removed from the account list."
+            else:
+                await cq.message.edit_text(f"[{alias}] Logout failed: {type(exc).__name__}: {exc}")
+                return
         finally:
             if client.is_connected():
                 await client.disconnect()
 
     removed = remove_account(uid, acc.phone)
     if not removed:
-        await cq.message.edit_text(f"[{alias}] Logged out, but failed to remove the account from the list.")
+        await cq.message.edit_text(f"[{alias}] Logout finished, but failed to remove the account from the list.")
         return
-    await cq.message.edit_text(f"[{alias}] Logged out and removed from the account list.")
+    await cq.message.edit_text(result_message)
 
 
 @router.callback_query(F.data.startswith("rm:"))
