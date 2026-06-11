@@ -1289,23 +1289,32 @@ async def cb_clean(cq: CallbackQuery) -> None:
 async def cb_lo(cq: CallbackQuery) -> None:
     await cq.answer()
     uid = cq.from_user.id
-    acc = find_account(uid, cq.data[3:])
-    if acc:
-        async with account_lease(uid, acc.phone, purpose="logout", ttl_seconds=60, wait_seconds=10) as lease:
-            if not lease.acquired:
-                await cq.message.edit_text(f"[{cq.data[3:]}] Account is busy. Try again later.")
-                return
-            client = _client_from_session(acc.session_string, acc.device_preset, acc)
-            try:
-                await client.connect()
-                await client.log_out()
-            except Exception:
-                pass
-            finally:
-                if client.is_connected():
-                    await client.disconnect()
-            remove_account(uid, acc.phone)
-    await cq.message.edit_text(f"[{cq.data[3:]}] Logged out.")
+    alias = cq.data[3:]
+    acc = find_account(uid, alias)
+    if not acc:
+        await cq.message.edit_text("Not found.")
+        return
+
+    async with account_lease(uid, acc.phone, purpose="logout", ttl_seconds=60, wait_seconds=10) as lease:
+        if not lease.acquired:
+            await cq.message.edit_text(f"[{alias}] Account is busy. Try again later.")
+            return
+        client = _client_from_session(acc.session_string, acc.device_preset, acc)
+        try:
+            await client.connect()
+            await client.log_out()
+        except Exception as exc:
+            await cq.message.edit_text(f"[{alias}] Logout failed: {type(exc).__name__}: {exc}")
+            return
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+
+    removed = remove_account(uid, acc.phone)
+    if not removed:
+        await cq.message.edit_text(f"[{alias}] Logged out, but failed to remove the account from the list.")
+        return
+    await cq.message.edit_text(f"[{alias}] Logged out and removed from the account list.")
 
 
 @router.callback_query(F.data.startswith("rm:"))
