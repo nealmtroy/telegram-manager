@@ -709,10 +709,24 @@ def _profile_value(value) -> str:
     return str(value) if value else "-"
 
 
+def _main_menu_text(user, uid: int, accounts: list, status: str) -> str:
+    return t(
+        "main_menu",
+        uid,
+        n=len(accounts),
+        username=f"@{user.username}" if getattr(user, "username", None) else "-",
+        telegram_id=uid,
+        status=status,
+    )
+
+
+
 def _welcome_text(message: Message, uid: int, accounts: list, status: str) -> str:
     user = message.from_user
+    if accounts:
+        return _main_menu_text(user, uid, accounts, status)
     return t(
-        "welcome_new" if not accounts else "main_menu",
+        "welcome_new",
         uid,
         n=len(accounts),
         name=_display_user_name(user),
@@ -1001,7 +1015,11 @@ async def btn_menu(message: Message) -> None:
         _state[uid] = {"action": "login_phone"}
         await message.answer(t("welcome_new", uid), reply_markup=_back_kb())
         return
-    await message.answer(t("main_menu", uid, n=len(accounts)), reply_markup=_main_kb(uid))
+    await message.answer(
+        _main_menu_text(message.from_user, uid, accounts, _vip_label(uid)),
+        reply_markup=_main_kb(uid),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("lang:"))
@@ -1011,7 +1029,12 @@ async def cb_lang(cq: CallbackQuery) -> None:
     set_lang(uid, cq.data[5:])
     set_admin_lang(uid, cq.data[5:])
     await cq.message.edit_text(t("lang_changed", uid))
-    await cq.message.answer(t("main_menu", uid, n=len(get_accounts(uid))), reply_markup=_main_kb(uid))
+    accounts = get_accounts(uid)
+    await cq.message.answer(
+        _main_menu_text(cq.from_user, uid, accounts, _vip_label(uid)),
+        reply_markup=_main_kb(uid),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("bc:"))
