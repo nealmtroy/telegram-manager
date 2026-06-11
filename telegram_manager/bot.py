@@ -1881,8 +1881,6 @@ async def handle_text(message: Message) -> None:
         return
 
     if not state:
-        n = len(get_accounts(uid))
-        await message.answer(t("main_menu", uid, n=n), reply_markup=_main_kb(uid))
         return
 
     action = state["action"]
