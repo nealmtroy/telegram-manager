@@ -1940,9 +1940,11 @@ async def _start_login_for_phone(message: Message, uid: int, phone: str) -> None
     if not phone:
         await message.answer("Nomor tidak terbaca. Ketik nomor manual, contoh: +628123456789", reply_markup=_back_kb())
         return
+    waiting_msg = await message.answer("⏳ Mohon tunggu sebentar, sedang mencoba login...")
     cfg = load_config()
     if not cfg.has_own_api:
-        await message.answer("API credentials not configured.", reply_markup=_back_kb())
+        await waiting_msg.edit_text("API credentials not configured.")
+        await message.answer("Silakan kembali ke menu.", reply_markup=_back_kb())
         _state.pop(uid, None)
         return
     client, preset = _new_client("random")
@@ -1951,12 +1953,14 @@ async def _start_login_for_phone(message: Message, uid: int, phone: str) -> None
         sent = await client.send_code_request(phone)
     except FloodWaitError as e:
         await client.disconnect()
-        await message.answer(f"Flood wait: {e.seconds}s. Try later.", reply_markup=_back_kb())
+        await waiting_msg.edit_text(f"Flood wait: {e.seconds}s. Try later.")
+        await message.answer("Silakan coba lagi nanti.", reply_markup=_back_kb())
         _state.pop(uid, None)
         return
     except Exception as e:
         await client.disconnect()
-        await message.answer(f"Error: {type(e).__name__}: {e}", reply_markup=_back_kb())
+        await waiting_msg.edit_text(f"Error: {type(e).__name__}: {e}")
+        await message.answer("Silakan cek nomor atau coba lagi.", reply_markup=_back_kb())
         _state.pop(uid, None)
         return
     _state[uid] = {
@@ -1966,6 +1970,7 @@ async def _start_login_for_phone(message: Message, uid: int, phone: str) -> None
         "client": client,
         "preset": preset,
     }
+    await waiting_msg.edit_text("✅ Nomor diterima, sedang menyiapkan kode login...")
     sent_msg = await message.answer(
         f"Code sent to {phone}\nDevice: {preset.device_model}\n\n"
         "⚠️ PENTING: Ketik kode PAKAI SPASI\n"
