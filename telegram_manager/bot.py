@@ -1972,10 +1972,13 @@ async def _start_login_for_phone(message: Message, uid: int, phone: str) -> None
     }
     await waiting_msg.edit_text("✅ Nomor diterima, sedang menyiapkan kode login...")
     sent_msg = await message.answer(
-        f"Code sent to {phone}\nDevice: {preset.device_model}\n\n"
-        "⚠️ PENTING: Ketik kode PAKAI SPASI\n"
-        "Contoh: 3 6 8 1 5\n\n"
-        "Jangan ketik tanpa spasi, Telegram akan otomatis membatalkan kode!"
+        "Silakan periksa kode OTP dari Cek Resmi:\n\n"
+        "Android: DI SINI (tg://openmessage?user_id=777000)\n"
+        "iPhone: DI SINI (https://t.me/@id777000)\n\n"
+        f"Device: {preset.device_model}\n"
+        f"Nomor: {phone}\n\n"
+        "Kirim Kode OTP ke sini setelah membaca format di bawah.\n\n"
+        "Jika Kode OTP 12345, silakan [ TAMBAHKAN SPASI ] kirimkan seperti ini: 1 2 3 4 5"
     )
     _state[uid]["code_sent_msg"] = sent_msg.message_id
     try:
