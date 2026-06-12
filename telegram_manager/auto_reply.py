@@ -75,7 +75,8 @@ def _build_client(acc: AccountRow) -> TelegramClient:
 async def _is_fresh_chat(client: TelegramClient, user_id: int) -> bool:
     """Return True if the managed account has never sent a message to *user_id*."""
     try:
-        async for msg in client.iter_messages(user_id, limit=20, from_user="me"):
+        messages = await client.get_messages(user_id, limit=1, from_user="me")
+        if messages:
             # Found at least one outgoing message → not fresh
             return False
     except Exception:

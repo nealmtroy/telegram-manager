@@ -10,6 +10,7 @@ import base64
 import os
 import random
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -94,6 +95,7 @@ from .db import (
     set_admin_lang,
     transfer_all,
     update_account_runtime,
+    update_account_session,
     update_auto_reply,
     update_broadcast_job,
     update_broadcast_job_item,
@@ -106,6 +108,8 @@ from .i18n import LANGUAGES, get_lang, set_lang, t
 from .logger import get_logger
 
 log = get_logger("bot")
+_account_flood_waits: dict[str, float] = {}
+_background_tasks: set[asyncio.Task] = set()
 router = Router()
 
 # Per-user state for multi-step flows
@@ -674,7 +678,13 @@ async def _check_account_health(bot: Bot, admin_id: int, acc: AccountRow) -> Non
         client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
-            await client.get_me()
+            if not await client.is_user_authorized():
+                raise AuthKeyUnregisteredError("Not authorized")
+
+            current_session = client.session.save()
+            if current_session != acc.session_string:
+                update_account_session(acc.admin_id, acc.phone, current_session)
+
             _mark_account_connected(acc)
         except Exception as exc:
             if _is_terminal_account_error(exc):
@@ -1461,11 +1471,11 @@ async def cb_otp(cq: CallbackQuery) -> None:
         client = _client_from_session(acc.session_string, acc.device_preset, acc)
         try:
             await client.connect()
-            from telethon.tl.types import InputPeerUser
+            from telethon.tl.types import PeerUser
             from datetime import datetime, timezone
             import re as _re
             codes = []
-            async for msg in client.iter_messages(777000, limit=5):
+            async for msg in client.iter_messages(PeerUser(777000), limit=5):
                 # 777000 is Telegram's official service notifications
                 nums = _re.findall(r"\b\d{4,6}\b", msg.text or "")
                 if nums:
@@ -1634,6 +1644,8 @@ async def _run_broadcast_job(
                 round_failed.append(line)
 
         async def run_account(acc: AccountRow) -> None:
+            if time.time() < _account_flood_waits.get(acc.phone, 0.0):
+                return
             account_items = items_by_phone.get(acc.phone, [])
             if not account_items or not should_keep_running():
                 return
@@ -1651,9 +1663,21 @@ async def _run_broadcast_job(
                         try:
                             client = _client_from_session(acc.session_string, acc.device_preset, acc)
                             await client.connect()
-                            await client.get_me()
+                            if not await client.is_user_authorized():
+                                raise AuthKeyUnregisteredError("Not authorized")
+
+                            # Save updated session string if it changed
+                            current_session = client.session.save()
+                            if current_session != acc.session_string:
+                                update_account_session(acc.admin_id, acc.phone, current_session)
+
                             _mark_account_connected(acc, status="broadcasting")
                             update_account_runtime(acc.admin_id, acc.phone, broadcast_job_id=job["job_id"], broadcast_updated_at=_runtime_now())
+
+                            uploaded_file = None
+                            if has_media and media_bytes:
+                                uploaded_file = await client.upload_file(media_bytes)
+
                             for item in account_items:
                                 target = item["target"]
                                 if not should_keep_running():
@@ -1671,8 +1695,8 @@ async def _run_broadcast_job(
                                     sent_count = 0
                                     for entity in entities:
                                         text_to_send = _message_text_for_send(msg_text, saved_texts, watermark)
-                                        if has_media and media_bytes:
-                                            await client.send_file(entity, media_bytes, caption=text_to_send, parse_mode="html", file_name=media_filename)
+                                        if has_media and uploaded_file:
+                                            await client.send_file(entity, uploaded_file, caption=text_to_send, parse_mode="html", file_name=media_filename)
                                         else:
                                             await client.send_message(entity, text_to_send, parse_mode="html")
                                         sent_count += 1
@@ -1688,7 +1712,8 @@ async def _run_broadcast_job(
                                     failed_line = f"{_account_identity_label(acc)} -> {target}: {detail} (retry)"
                                     await append_failed(failed_line)
                                     acc_failed.append(failed_line)
-                                    await asyncio.sleep(fw.seconds)
+                                    _account_flood_waits[acc.phone] = time.time() + fw.seconds
+                                    break
                                 except Exception as ex:
                                     detail = _categorize_broadcast_error(ex)
                                     permanent = _is_permanent_broadcast_error(ex)
@@ -2247,7 +2272,8 @@ async def handle_text(message: Message) -> None:
             client = _client_from_session(acc.session_string, acc.device_preset, acc)
             try:
                 await client.connect()
-                await client.get_me()
+                if not await client.is_user_authorized():
+                    raise AuthKeyUnregisteredError("Not authorized")
                 from telethon.tl.functions.account import UpdateProfileRequest
                 await client(UpdateProfileRequest(first_name=first, last_name=last))
                 await message.answer(f"[{alias}] Name: {first} {last}".strip(), reply_markup=_back_kb())
@@ -2272,7 +2298,8 @@ async def handle_text(message: Message) -> None:
             client = _client_from_session(acc.session_string, acc.device_preset, acc)
             try:
                 await client.connect()
-                await client.get_me()
+                if not await client.is_user_authorized():
+                    raise AuthKeyUnregisteredError("Not authorized")
                 from telethon.tl.functions.account import UpdateProfileRequest
                 await client(UpdateProfileRequest(about=text))
                 await message.answer(f"[{alias}] Bio updated.", reply_markup=_back_kb())
@@ -2297,7 +2324,8 @@ async def handle_text(message: Message) -> None:
             client = _client_from_session(acc.session_string, acc.device_preset, acc)
             try:
                 await client.connect()
-                await client.get_me()
+                if not await client.is_user_authorized():
+                    raise AuthKeyUnregisteredError("Not authorized")
                 from telethon.tl.functions.account import UpdateUsernameRequest
                 await client(UpdateUsernameRequest(username=text.lstrip("@")))
                 await message.answer(f"[{alias}] Username: @{text.lstrip('@')}", reply_markup=_back_kb())
@@ -2616,8 +2644,19 @@ async def run_bot() -> None:
     bot = Bot(token=token)
     dp = Dispatcher()
     dp.include_router(router)
-    asyncio.create_task(_auto_health_check_loop(bot))
-    asyncio.create_task(_auto_reply_reconcile_loop())
-    asyncio.create_task(_recover_broadcast_jobs(bot))
+
+    global _background_tasks
+    t1 = asyncio.create_task(_auto_health_check_loop(bot))
+    _background_tasks.add(t1)
+    t1.add_done_callback(_background_tasks.discard)
+
+    t2 = asyncio.create_task(_auto_reply_reconcile_loop())
+    _background_tasks.add(t2)
+    t2.add_done_callback(_background_tasks.discard)
+
+    t3 = asyncio.create_task(_recover_broadcast_jobs(bot))
+    _background_tasks.add(t3)
+    t3.add_done_callback(_background_tasks.discard)
+
     log.info("Bot starting...")
     await dp.start_polling(bot)

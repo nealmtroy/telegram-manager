@@ -20,6 +20,25 @@ _LOGGER_NAME = "telegram_manager"
 _INITIALIZED = False
 
 
+class TelethonLogFilter(logging.Filter):
+    """Filter out PersistentTimestampOutdatedError warning logs from Telethon.
+
+    These are caused by stateless StringSession clients attempting to fetch channel difference
+    and getting a server-side outdated timestamp error, which is harmless for direct-message-only
+    tasks but extremely spammy in logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "PersistentTimestampOutdatedError" in msg:
+            return False
+        if "Telegram is having internal issues" in msg and "PersistentTimestampOutdatedError" in msg:
+            return False
+        if "GetChannelDifferenceRequest" in msg:
+            return False
+        return True
+
+
 def setup_logger(
     log_dir: Path,
     level: str = "INFO",
@@ -89,6 +108,7 @@ def setup_logger(
     # Telethon's logger is noisy; keep it INFO unless user explicitly debugs.
     telethon_logger = logging.getLogger("telethon")
     telethon_logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+    telethon_logger.addFilter(TelethonLogFilter())
     # Mirror to our sinks so Telethon logs also land in the file.
     for handler in logger.handlers:
         telethon_logger.addHandler(handler)

@@ -346,6 +346,11 @@ def update_account_runtime(
     db.table("accounts").update(payload).eq("admin_id", admin_id).eq("phone", phone).execute()
 
 
+def update_account_session(admin_id: int, phone: str, session_string: str) -> None:
+    db = _get_client()
+    db.table("accounts").update({"session_string": session_string}).eq("admin_id", admin_id).eq("phone", phone).execute()
+
+
 def clear_account_broadcast_status(admin_id: int, phone: str) -> None:
     optional_columns = _account_optional_columns()
     payload: dict[str, Any] = {}
